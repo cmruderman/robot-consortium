@@ -13,7 +13,7 @@ export const getStatePath = (workingDir: string): string => {
   return path.join(getStateDir(workingDir), STATE_FILE);
 };
 
-export const initializeState = (workingDir: string, description: string): ConsortiumState => {
+export const initializeState = (workingDir: string, description: string, branchName?: string): ConsortiumState => {
   const stateDir = getStateDir(workingDir);
 
   // Create directories
@@ -38,6 +38,7 @@ export const initializeState = (workingDir: string, description: string): Consor
     findings: [],
     plans: [],
     reviews: [],
+    branchName,
   };
 
   saveState(workingDir, state);

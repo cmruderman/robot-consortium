@@ -125,33 +125,39 @@ program
       process.exit(1);
     }
 
-    // Create git branch unless --no-branch is specified
-    if (options.noBranch !== true) {
-      let branchName = options.branch;
+    // Handle git branch
+    let currentBranch: string | undefined;
+    try {
+      // Check if we're in a git repo
+      execSync('git rev-parse --git-dir', { cwd: workingDir, stdio: 'ignore' });
+      currentBranch = execSync('git branch --show-current', { cwd: workingDir, encoding: 'utf-8' }).trim();
 
-      if (!branchName) {
-        // Auto-generate branch name from issue or description
-        if (options.issue) {
-          const issueMatch = options.issue.match(/(\d+)$/);
-          if (issueMatch) {
-            branchName = `feat/issue-${issueMatch[1]}-robot-consortium`;
+      if (options.noBranch === true) {
+        // Use current branch
+        console.log(chalk.dim(`   Using current branch: ${currentBranch}`));
+      } else {
+        // Create or switch to branch
+        let branchName = options.branch;
+
+        if (!branchName) {
+          // Auto-generate branch name from issue or description
+          if (options.issue) {
+            const issueMatch = options.issue.match(/(\d+)$/);
+            if (issueMatch) {
+              branchName = `feat/issue-${issueMatch[1]}-robot-consortium`;
+            }
+          }
+          if (!branchName) {
+            // Generate from description
+            const slug = description
+              .split('\n')[0]
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '-')
+              .replace(/^-|-$/g, '')
+              .slice(0, 40);
+            branchName = `feat/${slug}-robot-consortium`;
           }
         }
-        if (!branchName) {
-          // Generate from description
-          const slug = description
-            .split('\n')[0]
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-|-$/g, '')
-            .slice(0, 40);
-          branchName = `feat/${slug}-robot-consortium`;
-        }
-      }
-
-      try {
-        // Check if we're in a git repo
-        execSync('git rev-parse --git-dir', { cwd: workingDir, stdio: 'ignore' });
 
         // Check if branch already exists
         try {
@@ -164,10 +170,11 @@ program
           console.log(chalk.dim(`   Creating branch: ${branchName}`));
           execSync(`git checkout -b ${branchName}`, { cwd: workingDir, stdio: 'inherit' });
         }
+        currentBranch = branchName;
         console.log(chalk.green(`   ✓ On branch: ${branchName}\n`));
-      } catch {
-        console.log(chalk.yellow('\n⚠️  Not a git repository, skipping branch creation\n'));
       }
+    } catch {
+      console.log(chalk.yellow('\n⚠️  Not a git repository, skipping branch handling\n'));
     }
 
     // Clean up old state if exists
@@ -187,7 +194,7 @@ program
     console.log(chalk.dim(`   Task: ${displayDesc}`));
     console.log(chalk.dim(`   Directory: ${workingDir}\n`));
 
-    initializeState(workingDir, description);
+    initializeState(workingDir, description, currentBranch);
     console.log(chalk.green('   ✓ Consortium initialized\n'));
 
     // Start running
