@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import chalk from 'chalk';
 import { loadState, updatePhase, addReview, getStateDir } from '../state.js';
-import { createAgentConfig, runAgentsInParallel, buildPigPrompt } from '../agents.js';
+import { createAgentConfig, runAgentsInParallel, runAgent, buildPigPrompt, buildPigLintPrompt } from '../agents.js';
 import { getFinalPlan } from './plan.js';
 
 const PIG_CHECK_TYPES = ['tests', 'code-review', 'spec-compliance'];
@@ -15,7 +15,7 @@ export interface OinkResult {
 
 export const runOinkPhase = async (workingDir: string): Promise<OinkResult> => {
   console.log(chalk.cyan('\n🐷 PHASE 4: OINK'));
-  console.log(chalk.dim('  Deploying 3 Pigs to verify the implementation...\n'));
+  console.log(chalk.dim('  Deploying Pigs to verify the implementation...\n'));
 
   const state = loadState(workingDir);
   if (!state) {
@@ -25,6 +25,35 @@ export const runOinkPhase = async (workingDir: string): Promise<OinkResult> => {
   updatePhase(workingDir, 'OINK');
 
   const finalPlan = getFinalPlan(workingDir);
+
+  // First, run the lint-fixing pig
+  console.log(chalk.dim('  Running lint checks first...\n'));
+  const lintPig = createAgentConfig('pig', 0, 'lint');
+  const lintResult = await runAgent(lintPig, {
+    workingDir,
+    prompt: buildPigLintPrompt(state.description, finalPlan),
+    allowedTools: [
+      'Read', 'Glob', 'Grep', 'Edit',
+      'Bash(yarn lint*)', 'Bash(yarn fix*)',
+      'Bash(npm run lint*)', 'Bash(npm run fix*)',
+      'Bash(git add*)', 'Bash(git status*)',
+    ],
+  });
+
+  if (lintResult.success) {
+    addReview(workingDir, 'pig-0-lint.md', lintResult.output);
+    const lintPassed = parseVerdict(lintResult.output);
+    if (!lintPassed) {
+      console.log(chalk.yellow('  ⚠️  Lint pig found issues that need manual review'));
+    } else {
+      console.log(chalk.green('  ✓ Lint checks passed'));
+    }
+  } else {
+    console.log(chalk.red(`  ✗ Lint pig failed: ${lintResult.error}`));
+  }
+
+  // Then run the verification pigs in parallel
+  console.log(chalk.dim('\n  Running verification checks...\n'));
 
   // Create pig agents
   const pigs = PIG_CHECK_TYPES.map((checkType, i) =>

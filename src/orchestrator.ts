@@ -1,7 +1,7 @@
 import * as readline from 'readline';
 import chalk from 'chalk';
 import { loadState, updatePhase, getTotalCost } from './state.js';
-import { runSurfPhase, runPlanPhase, runBuildPhase, runOinkPhase } from './phases/index.js';
+import { runSurfPhase, runPlanPhase, runBuildPhase, runOinkPhase, runPRPhase, runCICheckPhase } from './phases/index.js';
 import { Phase } from './types.js';
 
 let rl: readline.Interface | null = null;
@@ -70,7 +70,7 @@ export const runConsortium = async (workingDir: string, options: RunOptions = {}
 };
 
 const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void> => {
-  const phases: Phase[] = ['INIT', 'SURF', 'PLAN', 'BUILD', 'OINK'];
+  const phases: Phase[] = ['INIT', 'SURF', 'PLAN', 'BUILD', 'OINK', 'PR', 'CI_CHECK'];
   const startIndex = phases.indexOf(startPhase);
 
   for (let i = startIndex; i < phases.length; i++) {
@@ -182,8 +182,44 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
           }
         }
 
-        // Success!
-        updatePhase(workingDir, 'DONE');
+        // Proceed to PR phase
+        break;
+      }
+
+      case 'PR': {
+        const prResult = await runPRPhase(workingDir);
+
+        if (!prResult.success) {
+          console.log(chalk.red('\n❌ PR phase failed. Please review and retry.'));
+          return;
+        }
+
+        console.log(chalk.green(`\n  PR created: ${prResult.prUrl}`));
+        // Proceed to CI check
+        break;
+      }
+
+      case 'CI_CHECK': {
+        const ciResult = await runCICheckPhase(workingDir);
+
+        if (!ciResult.success) {
+          console.log(chalk.red('\n❌ CI_CHECK phase failed. Please review and retry.'));
+          return;
+        }
+
+        if (ciResult.ciPassed) {
+          // Success - move to DONE
+          updatePhase(workingDir, 'DONE');
+        } else if (ciResult.needsRetry) {
+          // Loop back to CI_CHECK after fixes
+          console.log(chalk.yellow('\n  CI fixes pushed. Checking again...'));
+          await runFromPhase(workingDir, 'CI_CHECK');
+          return;
+        } else {
+          // Max attempts reached or other issue
+          console.log(chalk.yellow('\n  Moving to DONE despite CI issues. Manual review may be needed.'));
+          updatePhase(workingDir, 'DONE');
+        }
         break;
       }
     }
@@ -207,8 +243,9 @@ export const showStatus = (workingDir: string): void => {
 
   console.log(chalk.bold.cyan('\n👑 ROBOT CONSORTIUM STATUS\n'));
   console.log(`  ID:          ${state.id}`);
-  console.log(`  Task:        ${state.description}`);
+  console.log(`  Task:        ${state.description.slice(0, 60)}${state.description.length > 60 ? '...' : ''}`);
   console.log(`  Phase:       ${chalk.bold(state.phase)}`);
+  console.log(`  Branch:      ${state.branchName || 'N/A'}`);
   console.log(`  Created:     ${state.createdAt}`);
   console.log(`  Updated:     ${state.updatedAt}`);
   console.log(`  Findings:    ${state.findings.length}`);
@@ -216,6 +253,11 @@ export const showStatus = (workingDir: string): void => {
   console.log(`  Reviews:     ${state.reviews.length}`);
   console.log(`  Tasks:       ${state.tasks.length}`);
   console.log(`  Total Cost:  $${getTotalCost(workingDir).toFixed(2)}`);
+
+  if (state.prUrl) {
+    console.log(`  PR:          ${state.prUrl}`);
+    console.log(`  CI Attempts: ${state.ciCheckAttempts || 0}`);
+  }
 
   if (state.questions.pending.length > 0) {
     console.log(chalk.yellow(`\n  ⚠️  ${state.questions.pending.length} pending question(s)`));

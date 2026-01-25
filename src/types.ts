@@ -1,4 +1,4 @@
-export type Phase = 'INIT' | 'SURF' | 'PLAN' | 'BUILD' | 'OINK' | 'DONE' | 'FAILED';
+export type Phase = 'INIT' | 'SURF' | 'PLAN' | 'BUILD' | 'OINK' | 'PR' | 'CI_CHECK' | 'DONE' | 'FAILED';
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'blocked';
 
@@ -58,6 +58,10 @@ export interface ConsortiumState {
   plans: string[];
   reviews: string[];
   finalPlan?: string;
+  prUrl?: string;
+  prNumber?: number;
+  ciCheckAttempts?: number;
+  branchName?: string;
 }
 
 export const AGENT_MODELS: Record<AgentRole, Model> = {
@@ -68,4 +72,4 @@ export const AGENT_MODELS: Record<AgentRole, Model> = {
   'pig': 'sonnet',
 };
 
-export const PHASE_ORDER: Phase[] = ['INIT', 'SURF', 'PLAN', 'BUILD', 'OINK', 'DONE'];
+export const PHASE_ORDER: Phase[] = ['INIT', 'SURF', 'PLAN', 'BUILD', 'OINK', 'PR', 'CI_CHECK', 'DONE'];
