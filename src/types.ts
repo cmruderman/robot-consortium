@@ -65,11 +65,11 @@ export interface ConsortiumState {
 }
 
 export const AGENT_MODELS: Record<AgentRole, Model> = {
-  'robot-king': 'sonnet',
-  'surfer': 'sonnet',
+  'robot-king': 'opus',
+  'surfer': 'opus',
   'city-planner': 'opus',
   'dawg': 'opus',
-  'pig': 'sonnet',
+  'pig': 'opus',
 };
 
 export const PHASE_ORDER: Phase[] = ['INIT', 'SURF', 'PLAN', 'BUILD', 'OINK', 'PR', 'CI_CHECK', 'DONE'];
