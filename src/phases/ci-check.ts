@@ -147,18 +147,17 @@ interface CIStatus {
 const checkCIStatus = async (workingDir: string, prNumber: number): Promise<CIStatus> => {
   try {
     const result = execSync(
-      `gh pr checks ${prNumber} --json name,state,conclusion`,
+      `gh pr checks ${prNumber} --json name,state`,
       { cwd: workingDir, encoding: 'utf-8' }
     );
 
     const checks = JSON.parse(result) as Array<{
       name: string;
       state: string;
-      conclusion: string;
     }>;
 
-    const failures = checks.filter(c => c.conclusion === 'FAILURE' || c.conclusion === 'failure');
-    const pending = checks.filter(c => c.state === 'PENDING' || c.state === 'pending' || c.state === 'IN_PROGRESS');
+    const failures = checks.filter(c => c.state === 'FAILURE');
+    const pending = checks.filter(c => c.state === 'PENDING' || c.state === 'IN_PROGRESS' || c.state === 'QUEUED');
 
     if (failures.length > 0) {
       return {
@@ -187,27 +186,26 @@ const getFailureLogs = async (workingDir: string, prNumber: number): Promise<str
   try {
     // Get the check run logs
     const result = execSync(
-      `gh pr checks ${prNumber} --json name,state,conclusion,detailsUrl`,
+      `gh pr checks ${prNumber} --json name,state,link`,
       { cwd: workingDir, encoding: 'utf-8' }
     );
 
     const checks = JSON.parse(result) as Array<{
       name: string;
       state: string;
-      conclusion: string;
-      detailsUrl: string;
+      link: string;
     }>;
 
-    const failures = checks.filter(c => c.conclusion === 'FAILURE' || c.conclusion === 'failure');
+    const failures = checks.filter(c => c.state === 'FAILURE');
 
     let logs = '# CI Failure Details\n\n';
     for (const failure of failures) {
       logs += `## ${failure.name}\n`;
-      logs += `URL: ${failure.detailsUrl}\n\n`;
+      logs += `URL: ${failure.link}\n\n`;
 
       // Try to get logs via gh run view if possible
       try {
-        const runIdMatch = failure.detailsUrl.match(/runs\/(\d+)/);
+        const runIdMatch = failure.link?.match(/runs\/(\d+)/);
         if (runIdMatch) {
           const runLogs = execSync(
             `gh run view ${runIdMatch[1]} --log-failed 2>/dev/null | tail -200`,
