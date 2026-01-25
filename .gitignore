@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.robot-consortium/
+*.log
+.DS_Store
