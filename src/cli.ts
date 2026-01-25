@@ -3,6 +3,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 import { initializeState, loadState } from './state.js';
 import { runConsortium, showStatus } from './orchestrator.js';
 
@@ -13,13 +14,101 @@ program
   .description('Multi-agent orchestration CLI for Claude Code')
   .version('0.1.0');
 
+interface StartOptions {
+  directory?: string;
+  file?: string;
+  issue?: string;
+}
+
+const resolveDescription = async (
+  inlineDescription: string | undefined,
+  options: StartOptions
+): Promise<{ description: string; source: string }> => {
+  // Priority: --file > --issue > inline argument
+  if (options.file) {
+    const filePath = options.file.startsWith('/')
+      ? options.file
+      : `${process.cwd()}/${options.file}`;
+
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`File not found: ${filePath}`);
+    }
+
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return { description: content, source: `file: ${options.file}` };
+  }
+
+  if (options.issue) {
+    const issueRef = options.issue;
+    let ghCommand: string;
+
+    // Check if it's a full URL or just an issue number
+    if (issueRef.includes('github.com')) {
+      // Full URL: https://github.com/owner/repo/issues/123
+      const match = issueRef.match(/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/);
+      if (!match) {
+        throw new Error(`Invalid GitHub issue URL: ${issueRef}`);
+      }
+      const [, owner, repo, number] = match;
+      ghCommand = `gh issue view ${number} --repo ${owner}/${repo} --json title,body,labels,comments`;
+    } else {
+      // Just an issue number - use current repo
+      ghCommand = `gh issue view ${issueRef} --json title,body,labels,comments`;
+    }
+
+    try {
+      const result = execSync(ghCommand, { encoding: 'utf-8' });
+      const issue = JSON.parse(result);
+
+      let description = `# ${issue.title}\n\n`;
+      description += issue.body || '';
+
+      if (issue.labels && issue.labels.length > 0) {
+        const labelNames = issue.labels.map((l: { name: string }) => l.name).join(', ');
+        description += `\n\n**Labels:** ${labelNames}`;
+      }
+
+      if (issue.comments && issue.comments.length > 0) {
+        description += '\n\n## Comments\n';
+        for (const comment of issue.comments) {
+          description += `\n### ${comment.author?.login || 'Unknown'}\n${comment.body}\n`;
+        }
+      }
+
+      return { description, source: `GitHub issue: ${issueRef}` };
+    } catch (error) {
+      throw new Error(`Failed to fetch GitHub issue: ${(error as Error).message}`);
+    }
+  }
+
+  if (inlineDescription) {
+    return { description: inlineDescription, source: 'inline' };
+  }
+
+  throw new Error('Must provide a description, --file, or --issue');
+};
+
 program
   .command('start')
   .description('Start a new consortium task')
-  .argument('<description>', 'Description of the task to accomplish')
+  .argument('[description]', 'Description of the task to accomplish')
   .option('-d, --directory <path>', 'Working directory (defaults to current)')
-  .action(async (description: string, options: { directory?: string }) => {
+  .option('-f, --file <path>', 'Read task description from a markdown file')
+  .option('-i, --issue <ref>', 'Fetch task from GitHub issue (number or full URL)')
+  .action(async (inlineDescription: string | undefined, options: StartOptions) => {
     const workingDir = options.directory || process.cwd();
+
+    // Resolve the description from various sources
+    let description: string;
+    let source: string;
+    try {
+      const resolved = await resolveDescription(inlineDescription, options);
+      description = resolved.description;
+      source = resolved.source;
+    } catch (error) {
+      console.log(chalk.red(`\n❌ ${(error as Error).message}\n`));
+      process.exit(1);
+    }
 
     // Check if there's already an active consortium
     const existing = loadState(workingDir);
@@ -36,9 +125,15 @@ program
       fs.rmSync(stateDir, { recursive: true });
     }
 
+    // Truncate description for display
+    const displayDesc = description.length > 100
+      ? description.slice(0, 100).replace(/\n/g, ' ') + '...'
+      : description.replace(/\n/g, ' ');
+
     console.log(chalk.bold.cyan('\n👑 ROBOT CONSORTIUM\n'));
     console.log(chalk.dim(`   Initializing new consortium...`));
-    console.log(chalk.dim(`   Task: ${description}`));
+    console.log(chalk.dim(`   Source: ${source}`));
+    console.log(chalk.dim(`   Task: ${displayDesc}`));
     console.log(chalk.dim(`   Directory: ${workingDir}\n`));
 
     initializeState(workingDir, description);
