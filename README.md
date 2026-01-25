@@ -13,20 +13,43 @@ npm link
 ## Usage
 
 ```bash
-# Start a new task
-robot-consortium start "Add user authentication to the API"
+# Start with inline description
+rc start "Add user authentication to the API"
+
+# Start from a markdown file
+rc start --file ./tasks/auth-feature.md
+
+# Start from a GitHub issue (current repo)
+rc start --issue 123
+
+# Start from a GitHub issue (any repo)
+rc start --issue https://github.com/owner/repo/issues/456
 
 # Check status
-robot-consortium status
+rc status
 
 # Resume a paused task
-robot-consortium resume
+rc resume
 
 # Abort and clean up
-robot-consortium abort
+rc abort
 ```
 
 Shorthand: `rc` works the same as `robot-consortium`.
+
+### Task Input Options
+
+| Option | Description |
+|--------|-------------|
+| `"description"` | Inline task description |
+| `--file <path>` | Read from markdown file |
+| `--issue <ref>` | Fetch from GitHub issue (requires `gh` CLI) |
+
+For `--issue`, you can provide:
+- Just the number: `--issue 123` (uses current repo)
+- Full URL: `--issue https://github.com/owner/repo/issues/123`
+
+Issue content includes title, body, labels, and comments.
 
 ## How It Works
 
