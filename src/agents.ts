@@ -42,6 +42,7 @@ export const runAgent = async (
     '--print',
     '--model', MODEL_MAP[agent.model],
     '--output-format', 'text',
+    '--dangerously-skip-permissions',
   ];
 
   if (systemPrompt) {
@@ -52,8 +53,7 @@ export const runAgent = async (
     args.push('--allowedTools', allowedTools.join(','));
   }
 
-  args.push('--prompt', prompt);
-
+  // Don't pass prompt as argument - we'll write it to stdin
   console.log(chalk.dim(`  [${agent.id}] Starting (${agent.model})...`));
 
   return new Promise((resolve) => {
@@ -62,8 +62,12 @@ export const runAgent = async (
 
     const proc = spawn('claude', args, {
       cwd: workingDir,
-      shell: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // Write prompt to stdin and close it
+    proc.stdin.write(prompt);
+    proc.stdin.end();
 
     proc.stdout.on('data', (data) => {
       const text = data.toString();

@@ -18,6 +18,9 @@ interface StartOptions {
   directory?: string;
   file?: string;
   issue?: string;
+  yes?: boolean;
+  branch?: string;
+  noBranch?: boolean;
 }
 
 const resolveDescription = async (
@@ -95,6 +98,9 @@ program
   .option('-d, --directory <path>', 'Working directory (defaults to current)')
   .option('-f, --file <path>', 'Read task description from a markdown file')
   .option('-i, --issue <ref>', 'Fetch task from GitHub issue (number or full URL)')
+  .option('-y, --yes', 'Auto-proceed through all checkpoints without prompting')
+  .option('-b, --branch <name>', 'Branch name to create (auto-generated if not provided)')
+  .option('--no-branch', 'Skip branch creation (use current branch)')
   .action(async (inlineDescription: string | undefined, options: StartOptions) => {
     const workingDir = options.directory || process.cwd();
 
@@ -119,6 +125,51 @@ program
       process.exit(1);
     }
 
+    // Create git branch unless --no-branch is specified
+    if (options.noBranch !== true) {
+      let branchName = options.branch;
+
+      if (!branchName) {
+        // Auto-generate branch name from issue or description
+        if (options.issue) {
+          const issueMatch = options.issue.match(/(\d+)$/);
+          if (issueMatch) {
+            branchName = `feat/issue-${issueMatch[1]}-robot-consortium`;
+          }
+        }
+        if (!branchName) {
+          // Generate from description
+          const slug = description
+            .split('\n')[0]
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 40);
+          branchName = `feat/${slug}-robot-consortium`;
+        }
+      }
+
+      try {
+        // Check if we're in a git repo
+        execSync('git rev-parse --git-dir', { cwd: workingDir, stdio: 'ignore' });
+
+        // Check if branch already exists
+        try {
+          execSync(`git rev-parse --verify ${branchName}`, { cwd: workingDir, stdio: 'ignore' });
+          console.log(chalk.yellow(`\n⚠️  Branch '${branchName}' already exists`));
+          console.log(chalk.dim(`   Checking out existing branch...\n`));
+          execSync(`git checkout ${branchName}`, { cwd: workingDir, stdio: 'inherit' });
+        } catch {
+          // Branch doesn't exist, create it
+          console.log(chalk.dim(`   Creating branch: ${branchName}`));
+          execSync(`git checkout -b ${branchName}`, { cwd: workingDir, stdio: 'inherit' });
+        }
+        console.log(chalk.green(`   ✓ On branch: ${branchName}\n`));
+      } catch {
+        console.log(chalk.yellow('\n⚠️  Not a git repository, skipping branch creation\n'));
+      }
+    }
+
     // Clean up old state if exists
     const stateDir = `${workingDir}/.robot-consortium`;
     if (fs.existsSync(stateDir)) {
@@ -140,14 +191,15 @@ program
     console.log(chalk.green('   ✓ Consortium initialized\n'));
 
     // Start running
-    await runConsortium(workingDir);
+    await runConsortium(workingDir, { yes: options.yes });
   });
 
 program
   .command('resume')
   .description('Resume an existing consortium')
   .option('-d, --directory <path>', 'Working directory (defaults to current)')
-  .action(async (options: { directory?: string }) => {
+  .option('-y, --yes', 'Auto-proceed through all checkpoints without prompting')
+  .action(async (options: { directory?: string; yes?: boolean }) => {
     const workingDir = options.directory || process.cwd();
 
     const state = loadState(workingDir);
@@ -168,7 +220,7 @@ program
       process.exit(1);
     }
 
-    await runConsortium(workingDir);
+    await runConsortium(workingDir, { yes: options.yes });
   });
 
 program

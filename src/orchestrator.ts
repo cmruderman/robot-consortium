@@ -4,25 +4,47 @@ import { loadState, updatePhase, getTotalCost } from './state.js';
 import { runSurfPhase, runPlanPhase, runBuildPhase, runOinkPhase } from './phases/index.js';
 import { Phase } from './types.js';
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
+let rl: readline.Interface | null = null;
+let autoYes = false;
+
+const getReadline = (): readline.Interface => {
+  if (!rl) {
+    rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+  }
+  return rl;
+};
 
 const ask = (question: string): Promise<string> => {
+  if (autoYes) {
+    console.log(question + ' [auto: yes]');
+    return Promise.resolve('y');
+  }
   return new Promise((resolve) => {
-    rl.question(question, (answer) => {
+    getReadline().question(question, (answer) => {
       resolve(answer.trim());
     });
   });
 };
 
 const askYesNo = async (question: string): Promise<boolean> => {
+  if (autoYes) {
+    console.log(`${question} (y/n): [auto: yes]`);
+    return true;
+  }
   const answer = await ask(`${question} (y/n): `);
   return answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
 };
 
-export const runConsortium = async (workingDir: string): Promise<void> => {
+export interface RunOptions {
+  yes?: boolean;
+}
+
+export const runConsortium = async (workingDir: string, options: RunOptions = {}): Promise<void> => {
+  autoYes = options.yes ?? false;
+
   const state = loadState(workingDir);
   if (!state) {
     throw new Error('No consortium state found. Run "robot-consortium start" first.');
@@ -33,10 +55,17 @@ export const runConsortium = async (workingDir: string): Promise<void> => {
   console.log(chalk.dim(`   Phase: ${state.phase}`));
   console.log(chalk.dim(`   Working dir: ${state.workingDirectory}\n`));
 
+  if (autoYes) {
+    console.log(chalk.yellow('   Mode: Auto-proceed (--yes)\n'));
+  }
+
   try {
     await runFromPhase(workingDir, state.phase);
   } finally {
-    rl.close();
+    if (rl) {
+      rl.close();
+      rl = null;
+    }
   }
 };
 
