@@ -186,6 +186,43 @@ Write a markdown report with:
 Be thorough but concise. Focus only on your assigned area.`;
 };
 
+export const buildSurferAnalysisPrompt = (description: string): string => {
+  return `You are the Robot King. Analyze this task and determine what exploration focuses are needed.
+
+TASK DESCRIPTION:
+${description}
+
+INSTRUCTIONS:
+1. Analyze the task to understand what areas of the codebase need exploration
+2. Determine what exploration focuses would be most valuable
+3. Consider areas like: existing patterns, similar features, test infrastructure, dependencies, error handling, API boundaries, configuration, security patterns, database/data layer, etc.
+4. Choose 2-5 exploration focuses based on the task needs
+
+GUIDELINES:
+- Simple tasks (UI tweak, small fix): 2 surfers
+- Medium tasks (new feature, refactor): 3 surfers
+- Complex tasks (cross-cutting, architectural): 4-5 surfers
+- Each focus should explore a DISTINCT area relevant to THIS task
+- Don't include focuses that aren't relevant to the task
+
+OUTPUT FORMAT (use exactly this format):
+SURFER_FOCUSES:
+1. [kebab-case-name]: [one-line description of what to explore]
+2. [kebab-case-name]: [one-line description]
+... (up to 5 max)
+END_FOCUSES
+
+Example for "Add user authentication":
+SURFER_FOCUSES:
+1. existing-auth-patterns: Look for any existing authentication or session handling code
+2. api-endpoints: Explore how API routes are structured and protected
+3. user-data-model: Find user-related database models and schemas
+4. security-patterns: Identify input validation, sanitization, and security practices
+END_FOCUSES
+
+Choose focuses that will help planners understand what exists and how to implement THIS specific task.`;
+};
+
 export const buildCityPlannerPrompt = (
   description: string,
   findings: string,

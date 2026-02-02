@@ -2,18 +2,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
-import { loadState, updatePhase, addFinding, getStateDir } from '../state.js';
-import { createAgentConfig, runAgentsInParallel, buildSurferPrompt } from '../agents.js';
+import { loadState, updatePhase, addFinding, getStateDir, setSurferFocuses } from '../state.js';
+import { createAgentConfig, runAgentsInParallel, runAgent, buildSurferPrompt, buildSurferAnalysisPrompt } from '../agents.js';
 
-const SURFER_FOCUSES = [
-  'existing patterns and conventions in the codebase',
-  'similar features or implementations that already exist',
-  'test patterns and testing infrastructure',
+const DEFAULT_FOCUSES = [
+  'existing-patterns: existing patterns and conventions in the codebase',
+  'similar-features: similar features or implementations that already exist',
+  'test-infrastructure: test patterns and testing infrastructure',
 ];
 
 export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOptions = {}): Promise<{ success: boolean; questions?: string[] }> => {
   console.log(chalk.cyan('\n🏄 PHASE 1: SURF'));
-  console.log(chalk.dim('  Deploying 3 Surfers to explore the codebase...\n'));
 
   const state = loadState(workingDir);
   if (!state) {
@@ -22,8 +21,23 @@ export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOption
 
   updatePhase(workingDir, 'SURF');
 
-  // Create surfer agents
-  const surfers = SURFER_FOCUSES.map((focus, i) => createAgentConfig('surfer', i + 1, focus));
+  // Have Robot King analyze task and determine surfer focuses
+  console.log(chalk.dim('  Robot King analyzing task to determine exploration focuses...\n'));
+  const focuses = await analyzeSurferNeeds(workingDir, state.description, phaseOptions.verbose);
+
+  // Store focuses in state for reference
+  setSurferFocuses(workingDir, focuses);
+
+  console.log(chalk.green(`  ✓ Robot King determined ${focuses.length} surfer(s) needed:`));
+  focuses.forEach((f) => {
+    const [name, desc] = f.split(':').map((s) => s.trim());
+    console.log(chalk.dim(`    - ${name}: ${desc || 'no description'}`));
+  });
+
+  console.log(chalk.dim(`\n  Deploying ${focuses.length} Surfer(s)...\n`));
+
+  // Create surfer agents with dynamic focuses
+  const surfers = focuses.map((focus, i) => createAgentConfig('surfer', i + 1, focus));
 
   // Build prompts for each surfer
   const options = surfers.map((surfer) => ({
@@ -41,11 +55,12 @@ export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOption
 
   results.forEach((result, i) => {
     const surfer = surfers[i];
+    const focusName = focuses[i].split(':')[0].trim();
 
     if (result.success) {
-      const filename = `${surfer.id}-${surfer.focus?.replace(/\s+/g, '-').toLowerCase().slice(0, 30)}.md`;
+      const filename = `${surfer.id}-${focusName}.md`;
       addFinding(workingDir, filename, result.output);
-      console.log(chalk.green(`  ✓ ${surfer.id} findings saved to ${filename}`));
+      console.log(chalk.green(`  ✓ ${surfer.id} (${focusName}) findings saved`));
 
       // Check for questions in output (simple heuristic)
       if (result.output.includes('QUESTION:') || result.output.includes('Need clarification:')) {
@@ -73,6 +88,70 @@ export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOption
   console.log(chalk.dim(`\n  Findings written to: ${findingsDir}/`));
 
   return { success: true, questions: questions.length > 0 ? questions : undefined };
+};
+
+const analyzeSurferNeeds = async (
+  workingDir: string,
+  description: string,
+  verbose?: boolean
+): Promise<string[]> => {
+  const robotKing = createAgentConfig('robot-king', 0);
+
+  const result = await runAgent(robotKing, {
+    workingDir,
+    prompt: buildSurferAnalysisPrompt(description),
+    allowedTools: [],
+    verbose,
+  });
+
+  if (!result.success) {
+    console.log(chalk.yellow('  ⚠ Robot King analysis failed, using default focuses'));
+    return DEFAULT_FOCUSES;
+  }
+
+  // Parse the focuses from Robot King's output
+  const focuses = parseSurferFocuses(result.output);
+
+  if (focuses.length === 0) {
+    console.log(chalk.yellow('  ⚠ Could not parse focuses, using defaults'));
+    return DEFAULT_FOCUSES;
+  }
+
+  return focuses;
+};
+
+const parseSurferFocuses = (output: string): string[] => {
+  const focuses: string[] = [];
+
+  // Look for the SURFER_FOCUSES block
+  const match = output.match(/SURFER_FOCUSES:\s*([\s\S]*?)END_FOCUSES/);
+  if (!match) {
+    return [];
+  }
+
+  const block = match[1];
+  const lines = block.split('\n');
+
+  for (const line of lines) {
+    // Match lines like "1. existing-patterns: Look for existing patterns"
+    const lineMatch = line.match(/^\d+\.\s*(.+)$/);
+    if (lineMatch) {
+      const focus = lineMatch[1].trim();
+      if (focus) {
+        focuses.push(focus);
+      }
+    }
+  }
+
+  // Enforce limits: 2-5 surfers
+  if (focuses.length > 5) {
+    return focuses.slice(0, 5);
+  }
+  if (focuses.length < 2) {
+    return DEFAULT_FOCUSES;
+  }
+
+  return focuses;
 };
 
 export const getSurfFindings = (workingDir: string): string => {

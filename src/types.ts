@@ -62,6 +62,7 @@ export interface ConsortiumState {
   prNumber?: number;
   ciCheckAttempts?: number;
   branchName?: string;
+  surferFocuses?: string[];
   plannerPerspectives?: string[];
 }
 
