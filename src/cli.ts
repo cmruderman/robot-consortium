@@ -19,6 +19,7 @@ interface StartOptions {
   file?: string;
   issue?: string;
   yes?: boolean;
+  verbose?: boolean;
   branch?: string;
   noBranch?: boolean;
 }
@@ -99,6 +100,7 @@ program
   .option('-f, --file <path>', 'Read task description from a markdown file')
   .option('-i, --issue <ref>', 'Fetch task from GitHub issue (number or full URL)')
   .option('-y, --yes', 'Auto-proceed through all checkpoints without prompting')
+  .option('-v, --verbose', 'Stream agent output in real-time')
   .option('-b, --branch <name>', 'Branch name to create (auto-generated if not provided)')
   .option('--no-branch', 'Skip branch creation (use current branch)')
   .action(async (inlineDescription: string | undefined, options: StartOptions) => {
@@ -198,7 +200,7 @@ program
     console.log(chalk.green('   ✓ Consortium initialized\n'));
 
     // Start running
-    await runConsortium(workingDir, { yes: options.yes });
+    await runConsortium(workingDir, { yes: options.yes, verbose: options.verbose });
   });
 
 program
@@ -206,7 +208,8 @@ program
   .description('Resume an existing consortium')
   .option('-d, --directory <path>', 'Working directory (defaults to current)')
   .option('-y, --yes', 'Auto-proceed through all checkpoints without prompting')
-  .action(async (options: { directory?: string; yes?: boolean }) => {
+  .option('-v, --verbose', 'Stream agent output in real-time')
+  .action(async (options: { directory?: string; yes?: boolean; verbose?: boolean }) => {
     const workingDir = options.directory || process.cwd();
 
     const state = loadState(workingDir);
@@ -227,7 +230,7 @@ program
       process.exit(1);
     }
 
-    await runConsortium(workingDir, { yes: options.yes });
+    await runConsortium(workingDir, { yes: options.yes, verbose: options.verbose });
   });
 
 program

@@ -1,8 +1,8 @@
 import chalk from 'chalk';
+import { PhaseOptions } from '../types.js';
 import { loadState, updatePhase, addTask, updateTask } from '../state.js';
 import { createAgentConfig, runAgent, runAgentsInParallel, buildDawgPrompt } from '../agents.js';
 import { getFinalPlan } from './plan.js';
-import { Task } from '../types.js';
 
 interface BuildTask {
   id: string;
@@ -10,7 +10,7 @@ interface BuildTask {
   dependencies: string[];
 }
 
-export const runBuildPhase = async (workingDir: string): Promise<{ success: boolean; questions?: string[] }> => {
+export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptions = {}): Promise<{ success: boolean; questions?: string[] }> => {
   console.log(chalk.cyan('\n🔨 PHASE 3: BUILD'));
   console.log(chalk.dim('  Analyzing plan for implementation tasks...\n'));
 
@@ -24,7 +24,7 @@ export const runBuildPhase = async (workingDir: string): Promise<{ success: bool
   const finalPlan = getFinalPlan(workingDir);
 
   // First, have Robot King break down the plan into tasks
-  const tasks = await extractTasksFromPlan(workingDir, state.description, finalPlan);
+  const tasks = await extractTasksFromPlan(workingDir, state.description, finalPlan, phaseOptions.verbose);
 
   if (tasks.length === 0) {
     console.log(chalk.yellow('  No implementation tasks extracted. Treating as single task.'));
@@ -64,7 +64,7 @@ export const runBuildPhase = async (workingDir: string): Promise<{ success: bool
       allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash(yarn*)', 'Bash(npm*)', 'Bash(git diff*)'],
     }));
 
-    const results = await runAgentsInParallel(dawgs, options);
+    const results = await runAgentsInParallel(dawgs, options, phaseOptions.verbose);
 
     results.forEach((result, i) => {
       const task = independentTasks[i];
@@ -106,6 +106,7 @@ export const runBuildPhase = async (workingDir: string): Promise<{ success: bool
       workingDir,
       prompt: buildDawgPrompt(state.description, finalPlan, task.description),
       allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash(yarn*)', 'Bash(npm*)', 'Bash(git diff*)'],
+      verbose: phaseOptions.verbose,
     });
 
     if (result.success) {
@@ -135,7 +136,8 @@ export const runBuildPhase = async (workingDir: string): Promise<{ success: bool
 const extractTasksFromPlan = async (
   workingDir: string,
   description: string,
-  plan: string
+  plan: string,
+  verbose?: boolean
 ): Promise<BuildTask[]> => {
   const robotKing = createAgentConfig('robot-king', 0);
 
@@ -167,6 +169,7 @@ Example:
     workingDir,
     prompt,
     allowedTools: [],
+    verbose,
   });
 
   if (!result.success) {

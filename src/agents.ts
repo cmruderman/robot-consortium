@@ -2,6 +2,14 @@ import { spawn } from 'child_process';
 import { AgentConfig, AgentRole, AGENT_MODELS, Model } from './types.js';
 import chalk from 'chalk';
 
+const formatElapsed = (ms: number): string => {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}m ${remainingSeconds}s`;
+};
+
 export interface AgentResult {
   success: boolean;
   output: string;
@@ -15,6 +23,7 @@ export interface AgentOptions {
   systemPrompt?: string;
   allowedTools?: string[];
   outputFile?: string;
+  verbose?: boolean;
 }
 
 const MODEL_MAP: Record<Model, string> = {
@@ -36,7 +45,7 @@ export const runAgent = async (
   agent: AgentConfig,
   options: AgentOptions
 ): Promise<AgentResult> => {
-  const { workingDir, prompt, systemPrompt, allowedTools, outputFile } = options;
+  const { workingDir, prompt, systemPrompt, allowedTools, verbose } = options;
 
   const args: string[] = [
     '--print',
@@ -53,17 +62,29 @@ export const runAgent = async (
     args.push('--allowedTools', allowedTools.join(','));
   }
 
-  // Don't pass prompt as argument - we'll write it to stdin
+  const startTime = Date.now();
   console.log(chalk.dim(`  [${agent.id}] Starting (${agent.model})...`));
 
   return new Promise((resolve) => {
     let output = '';
     let errorOutput = '';
+    let lastProgressUpdate = Date.now();
+    const PROGRESS_INTERVAL = 15000; // Update every 15 seconds
 
     const proc = spawn('claude', args, {
       cwd: workingDir,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // Progress update interval (only when not verbose)
+    const progressInterval = !verbose ? setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      const now = Date.now();
+      if (now - lastProgressUpdate >= PROGRESS_INTERVAL) {
+        console.log(chalk.dim(`  [${agent.id}] Still working... (${formatElapsed(elapsed)})`));
+        lastProgressUpdate = now;
+      }
+    }, PROGRESS_INTERVAL) : null;
 
     // Write prompt to stdin and close it
     proc.stdin.write(prompt);
@@ -72,21 +93,37 @@ export const runAgent = async (
     proc.stdout.on('data', (data) => {
       const text = data.toString();
       output += text;
+
+      if (verbose) {
+        // Stream output with agent prefix
+        const lines = text.split('\n');
+        lines.forEach((line: string, i: number) => {
+          // Don't print empty trailing line from split
+          if (i === lines.length - 1 && line === '') return;
+          console.log(chalk.dim(`  [${agent.id}] `) + line);
+        });
+      }
     });
 
     proc.stderr.on('data', (data) => {
       errorOutput += data.toString();
+      if (verbose) {
+        console.log(chalk.yellow(`  [${agent.id}] `) + data.toString().trim());
+      }
     });
 
     proc.on('close', (code) => {
+      if (progressInterval) clearInterval(progressInterval);
+      const elapsed = Date.now() - startTime;
+
       if (code === 0) {
-        console.log(chalk.green(`  [${agent.id}] Completed`));
+        console.log(chalk.green(`  [${agent.id}] Completed (${formatElapsed(elapsed)})`));
         resolve({
           success: true,
           output: output.trim(),
         });
       } else {
-        console.log(chalk.red(`  [${agent.id}] Failed (exit code ${code})`));
+        console.log(chalk.red(`  [${agent.id}] Failed (exit code ${code}, ${formatElapsed(elapsed)})`));
         resolve({
           success: false,
           output: output.trim(),
@@ -96,6 +133,7 @@ export const runAgent = async (
     });
 
     proc.on('error', (err) => {
+      if (progressInterval) clearInterval(progressInterval);
       console.log(chalk.red(`  [${agent.id}] Error: ${err.message}`));
       resolve({
         success: false,
@@ -108,13 +146,20 @@ export const runAgent = async (
 
 export const runAgentsInParallel = async (
   agents: AgentConfig[],
-  optionsPerAgent: AgentOptions[]
+  optionsPerAgent: AgentOptions[],
+  verbose?: boolean
 ): Promise<AgentResult[]> => {
   if (agents.length !== optionsPerAgent.length) {
     throw new Error('Agents and options arrays must have the same length');
   }
 
-  const promises = agents.map((agent, i) => runAgent(agent, optionsPerAgent[i]));
+  // Pass verbose to each agent's options
+  const optionsWithVerbose = optionsPerAgent.map((opt) => ({
+    ...opt,
+    verbose: verbose ?? opt.verbose,
+  }));
+
+  const promises = agents.map((agent, i) => runAgent(agent, optionsWithVerbose[i]));
   return Promise.all(promises);
 };
 

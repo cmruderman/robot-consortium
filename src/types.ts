@@ -74,3 +74,7 @@ export const AGENT_MODELS: Record<AgentRole, Model> = {
 };
 
 export const PHASE_ORDER: Phase[] = ['INIT', 'SURF', 'PLAN', 'BUILD', 'OINK', 'PR', 'CI_CHECK', 'DONE'];
+
+export interface PhaseOptions {
+  verbose?: boolean;
+}

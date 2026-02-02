@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import chalk from 'chalk';
+import { PhaseOptions } from '../types.js';
 import { loadState, updatePhase, addPlan, setFinalPlan, getStateDir, setPlannerPerspectives } from '../state.js';
 import { createAgentConfig, runAgentsInParallel, runAgent, buildCityPlannerPrompt, buildPlannerAnalysisPrompt } from '../agents.js';
 import { getSurfFindings } from './surf.js';
@@ -11,7 +12,7 @@ const DEFAULT_PERSPECTIVES = [
   'minimal - do the least amount of work that solves the problem correctly',
 ];
 
-export const runPlanPhase = async (workingDir: string): Promise<{ success: boolean; questions?: string[] }> => {
+export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOptions = {}): Promise<{ success: boolean; questions?: string[] }> => {
   console.log(chalk.cyan('\n📋 PHASE 2: PLAN'));
 
   const state = loadState(workingDir);
@@ -26,7 +27,7 @@ export const runPlanPhase = async (workingDir: string): Promise<{ success: boole
 
   // Have Robot King analyze findings and determine planner perspectives
   console.log(chalk.dim('  Robot King analyzing findings to determine planner perspectives...\n'));
-  const perspectives = await analyzePlannerNeeds(workingDir, state.description, findings);
+  const perspectives = await analyzePlannerNeeds(workingDir, state.description, findings, phaseOptions.verbose);
 
   // Store perspectives in state for reference
   setPlannerPerspectives(workingDir, perspectives);
@@ -52,7 +53,7 @@ export const runPlanPhase = async (workingDir: string): Promise<{ success: boole
   }));
 
   // Run planners in parallel
-  const results = await runAgentsInParallel(planners, options);
+  const results = await runAgentsInParallel(planners, options, phaseOptions.verbose);
 
   // Process results
   const failedPlanners: string[] = [];
@@ -89,7 +90,7 @@ export const runPlanPhase = async (workingDir: string): Promise<{ success: boole
   console.log(chalk.dim('\n  Robot King synthesizing final plan...'));
 
   const allPlans = getPlans(workingDir);
-  const synthesisResult = await synthesizePlans(workingDir, state.description, allPlans, perspectives.length);
+  const synthesisResult = await synthesizePlans(workingDir, state.description, allPlans, perspectives.length, phaseOptions.verbose);
 
   if (!synthesisResult.success) {
     console.log(chalk.red('  ✗ Failed to synthesize plans'));
@@ -109,7 +110,8 @@ export const runPlanPhase = async (workingDir: string): Promise<{ success: boole
 const analyzePlannerNeeds = async (
   workingDir: string,
   description: string,
-  findings: string
+  findings: string,
+  verbose?: boolean
 ): Promise<string[]> => {
   const robotKing = createAgentConfig('robot-king', 0);
 
@@ -117,6 +119,7 @@ const analyzePlannerNeeds = async (
     workingDir,
     prompt: buildPlannerAnalysisPrompt(description, findings),
     allowedTools: ['Read'],
+    verbose,
   });
 
   if (!result.success) {
@@ -170,7 +173,8 @@ const synthesizePlans = async (
   workingDir: string,
   description: string,
   plans: string,
-  plannerCount: number
+  plannerCount: number,
+  verbose?: boolean
 ) => {
   const robotKing = createAgentConfig('robot-king', 0);
 
@@ -210,6 +214,7 @@ Be specific and actionable. This plan will be handed to implementation agents.`;
     workingDir,
     prompt,
     allowedTools: ['Read'],
+    verbose,
   });
 };
 

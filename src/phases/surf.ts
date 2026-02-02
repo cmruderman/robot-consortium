@@ -1,9 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import chalk from 'chalk';
-import { ConsortiumState } from '../types.js';
-import { loadState, saveState, updatePhase, addFinding, getStateDir } from '../state.js';
-import { createAgentConfig, runAgentsInParallel, buildSurferPrompt, AgentResult } from '../agents.js';
+import { PhaseOptions } from '../types.js';
+import { loadState, updatePhase, addFinding, getStateDir } from '../state.js';
+import { createAgentConfig, runAgentsInParallel, buildSurferPrompt } from '../agents.js';
 
 const SURFER_FOCUSES = [
   'existing patterns and conventions in the codebase',
@@ -11,7 +11,7 @@ const SURFER_FOCUSES = [
   'test patterns and testing infrastructure',
 ];
 
-export const runSurfPhase = async (workingDir: string): Promise<{ success: boolean; questions?: string[] }> => {
+export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOptions = {}): Promise<{ success: boolean; questions?: string[] }> => {
   console.log(chalk.cyan('\n🏄 PHASE 1: SURF'));
   console.log(chalk.dim('  Deploying 3 Surfers to explore the codebase...\n'));
 
@@ -33,7 +33,7 @@ export const runSurfPhase = async (workingDir: string): Promise<{ success: boole
   }));
 
   // Run surfers in parallel
-  const results = await runAgentsInParallel(surfers, options);
+  const results = await runAgentsInParallel(surfers, options, phaseOptions.verbose);
 
   // Process results
   const failedSurfers: string[] = [];

@@ -1,5 +1,6 @@
 import { execSync } from 'child_process';
 import chalk from 'chalk';
+import { PhaseOptions } from '../types.js';
 import { loadState, saveState, updatePhase } from '../state.js';
 import { createAgentConfig, runAgent, buildCIFixPrompt } from '../agents.js';
 
@@ -13,7 +14,7 @@ export interface CICheckResult {
   error?: string;
 }
 
-export const runCICheckPhase = async (workingDir: string): Promise<CICheckResult> => {
+export const runCICheckPhase = async (workingDir: string, phaseOptions: PhaseOptions = {}): Promise<CICheckResult> => {
   console.log(chalk.cyan('\n🔍 PHASE 6: CI_CHECK'));
 
   const state = loadState(workingDir);
@@ -85,6 +86,7 @@ export const runCICheckPhase = async (workingDir: string): Promise<CICheckResult
     workingDir,
     prompt: fixPrompt,
     allowedTools: ['Read', 'Glob', 'Grep', 'Edit', 'Bash(yarn*)', 'Bash(npm*)', 'Bash(git*)'],
+    verbose: phaseOptions.verbose,
   });
 
   if (!result.success) {

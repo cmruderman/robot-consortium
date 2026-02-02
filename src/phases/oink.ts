@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import chalk from 'chalk';
+import { PhaseOptions } from '../types.js';
 import { loadState, updatePhase, addReview, getStateDir } from '../state.js';
 import { createAgentConfig, runAgentsInParallel, runAgent, buildPigPrompt, buildPigLintPrompt } from '../agents.js';
 import { getFinalPlan } from './plan.js';
@@ -13,7 +14,7 @@ export interface OinkResult {
   feedback?: string;
 }
 
-export const runOinkPhase = async (workingDir: string): Promise<OinkResult> => {
+export const runOinkPhase = async (workingDir: string, phaseOptions: PhaseOptions = {}): Promise<OinkResult> => {
   console.log(chalk.cyan('\n🐷 PHASE 4: OINK'));
   console.log(chalk.dim('  Deploying Pigs to verify the implementation...\n'));
 
@@ -38,6 +39,7 @@ export const runOinkPhase = async (workingDir: string): Promise<OinkResult> => {
       'Bash(npm run lint*)', 'Bash(npm run fix*)',
       'Bash(git add*)', 'Bash(git status*)',
     ],
+    verbose: phaseOptions.verbose,
   });
 
   if (lintResult.success) {
@@ -70,7 +72,7 @@ export const runOinkPhase = async (workingDir: string): Promise<OinkResult> => {
   }));
 
   // Run pigs in parallel
-  const results = await runAgentsInParallel(pigs, options);
+  const results = await runAgentsInParallel(pigs, options, phaseOptions.verbose);
 
   // Process results
   const failedPigs: string[] = [];

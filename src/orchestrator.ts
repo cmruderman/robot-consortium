@@ -40,10 +40,14 @@ const askYesNo = async (question: string): Promise<boolean> => {
 
 export interface RunOptions {
   yes?: boolean;
+  verbose?: boolean;
 }
+
+let verboseMode = false;
 
 export const runConsortium = async (workingDir: string, options: RunOptions = {}): Promise<void> => {
   autoYes = options.yes ?? false;
+  verboseMode = options.verbose ?? false;
 
   const state = loadState(workingDir);
   if (!state) {
@@ -56,7 +60,13 @@ export const runConsortium = async (workingDir: string, options: RunOptions = {}
   console.log(chalk.dim(`   Working dir: ${state.workingDirectory}\n`));
 
   if (autoYes) {
-    console.log(chalk.yellow('   Mode: Auto-proceed (--yes)\n'));
+    console.log(chalk.yellow('   Mode: Auto-proceed (--yes)'));
+  }
+  if (verboseMode) {
+    console.log(chalk.yellow('   Mode: Verbose (--verbose)'));
+  }
+  if (autoYes || verboseMode) {
+    console.log('');
   }
 
   try {
@@ -82,7 +92,7 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
         break;
 
       case 'SURF': {
-        const surfResult = await runSurfPhase(workingDir);
+        const surfResult = await runSurfPhase(workingDir, { verbose: verboseMode });
 
         if (!surfResult.success) {
           console.log(chalk.red('\n❌ SURF phase failed. Please review and retry.'));
@@ -111,7 +121,7 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
       }
 
       case 'PLAN': {
-        const planResult = await runPlanPhase(workingDir);
+        const planResult = await runPlanPhase(workingDir, { verbose: verboseMode });
 
         if (!planResult.success) {
           console.log(chalk.red('\n❌ PLAN phase failed. Please review and retry.'));
@@ -140,7 +150,7 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
       }
 
       case 'BUILD': {
-        const buildResult = await runBuildPhase(workingDir);
+        const buildResult = await runBuildPhase(workingDir, { verbose: verboseMode });
 
         if (!buildResult.success) {
           console.log(chalk.red('\n❌ BUILD phase failed. Please review errors and retry.'));
@@ -159,7 +169,7 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
       }
 
       case 'OINK': {
-        const oinkResult = await runOinkPhase(workingDir);
+        const oinkResult = await runOinkPhase(workingDir, { verbose: verboseMode });
 
         if (!oinkResult.success) {
           console.log(chalk.red('\n❌ OINK phase failed. Please review and retry.'));
@@ -187,7 +197,7 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
       }
 
       case 'PR': {
-        const prResult = await runPRPhase(workingDir);
+        const prResult = await runPRPhase(workingDir, { verbose: verboseMode });
 
         if (!prResult.success) {
           console.log(chalk.red('\n❌ PR phase failed. Please review and retry.'));
@@ -200,7 +210,7 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
       }
 
       case 'CI_CHECK': {
-        const ciResult = await runCICheckPhase(workingDir);
+        const ciResult = await runCICheckPhase(workingDir, { verbose: verboseMode });
 
         if (!ciResult.success) {
           console.log(chalk.red('\n❌ CI_CHECK phase failed. Please review and retry.'));
