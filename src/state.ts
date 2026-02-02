@@ -169,6 +169,14 @@ export const setFinalPlan = (workingDir: string, content: string): void => {
   saveState(workingDir, state);
 };
 
+export const setPlannerPerspectives = (workingDir: string, perspectives: string[]): void => {
+  const state = loadState(workingDir);
+  if (!state) throw new Error('No active consortium found');
+
+  state.plannerPerspectives = perspectives;
+  saveState(workingDir, state);
+};
+
 export const addReview = (workingDir: string, filename: string, content: string): void => {
   const state = loadState(workingDir);
   if (!state) throw new Error('No active consortium found');

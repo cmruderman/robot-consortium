@@ -62,6 +62,7 @@ export interface ConsortiumState {
   prNumber?: number;
   ciCheckAttempts?: number;
   branchName?: string;
+  plannerPerspectives?: string[];
 }
 
 export const AGENT_MODELS: Record<AgentRole, Model> = {

@@ -248,6 +248,44 @@ CURRENT PHASE: ${phase}
 Your job is to coordinate the work. Based on the current phase, determine what needs to happen next.`;
 };
 
+export const buildPlannerAnalysisPrompt = (description: string, findings: string): string => {
+  return `You are the Robot King. Based on the surfer findings, determine what planner perspectives are needed.
+
+TASK DESCRIPTION:
+${description}
+
+SURFER FINDINGS:
+${findings}
+
+INSTRUCTIONS:
+1. Analyze the findings to understand the task complexity
+2. Determine what expertise/perspectives would be most valuable for planning
+3. Consider areas like: architecture, testing, security, performance, UX, database, API design, migration safety, etc.
+4. Choose 1-5 planner perspectives based on the task needs
+
+GUIDELINES:
+- Simple tasks (single file, minor change): 1-2 planners
+- Medium tasks (multiple files, clear scope): 2-3 planners
+- Complex tasks (cross-cutting, architectural): 3-5 planners
+- Each perspective should offer a DISTINCT viewpoint
+
+OUTPUT FORMAT (use exactly this format):
+PLANNER_PERSPECTIVES:
+1. [kebab-case-name]: [one-line description of what this planner should focus on]
+2. [kebab-case-name]: [one-line description]
+... (up to 5 max)
+END_PERSPECTIVES
+
+Example:
+PLANNER_PERSPECTIVES:
+1. api-design: Focus on clean REST API design and endpoint structure
+2. database-safety: Ensure migrations are safe and reversible
+3. testing-strategy: Plan comprehensive test coverage
+END_PERSPECTIVES
+
+Choose perspectives that will produce meaningfully different plans for THIS specific task.`;
+};
+
 export const buildRobotKingPRPrompt = (
   description: string,
   diffSummary: string,

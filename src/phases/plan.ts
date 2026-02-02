@@ -1,11 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import chalk from 'chalk';
-import { loadState, updatePhase, addPlan, setFinalPlan, getStateDir } from '../state.js';
-import { createAgentConfig, runAgentsInParallel, runAgent, buildCityPlannerPrompt, buildRobotKingPrompt } from '../agents.js';
+import { loadState, updatePhase, addPlan, setFinalPlan, getStateDir, setPlannerPerspectives } from '../state.js';
+import { createAgentConfig, runAgentsInParallel, runAgent, buildCityPlannerPrompt, buildPlannerAnalysisPrompt } from '../agents.js';
 import { getSurfFindings } from './surf.js';
 
-const PLANNER_PERSPECTIVES = [
+const DEFAULT_PERSPECTIVES = [
   'conservative - minimize risk, prefer incremental changes, prioritize stability',
   'ambitious - aim for the best solution, accept more complexity if justified',
   'minimal - do the least amount of work that solves the problem correctly',
@@ -13,7 +13,6 @@ const PLANNER_PERSPECTIVES = [
 
 export const runPlanPhase = async (workingDir: string): Promise<{ success: boolean; questions?: string[] }> => {
   console.log(chalk.cyan('\n📋 PHASE 2: PLAN'));
-  console.log(chalk.dim('  Deploying 3 City Planners to propose approaches...\n'));
 
   const state = loadState(workingDir);
   if (!state) {
@@ -25,8 +24,23 @@ export const runPlanPhase = async (workingDir: string): Promise<{ success: boole
   // Get findings from surf phase
   const findings = getSurfFindings(workingDir);
 
-  // Create planner agents
-  const planners = PLANNER_PERSPECTIVES.map((perspective, i) =>
+  // Have Robot King analyze findings and determine planner perspectives
+  console.log(chalk.dim('  Robot King analyzing findings to determine planner perspectives...\n'));
+  const perspectives = await analyzePlannerNeeds(workingDir, state.description, findings);
+
+  // Store perspectives in state for reference
+  setPlannerPerspectives(workingDir, perspectives);
+
+  console.log(chalk.green(`  ✓ Robot King determined ${perspectives.length} planner(s) needed:`));
+  perspectives.forEach((p) => {
+    const [name, desc] = p.split(':').map((s) => s.trim());
+    console.log(chalk.dim(`    - ${name}: ${desc || 'no description'}`));
+  });
+
+  console.log(chalk.dim(`\n  Deploying ${perspectives.length} City Planner(s)...\n`));
+
+  // Create planner agents with dynamic perspectives
+  const planners = perspectives.map((perspective, i) =>
     createAgentConfig('city-planner', i + 1, perspective)
   );
 
@@ -46,7 +60,7 @@ export const runPlanPhase = async (workingDir: string): Promise<{ success: boole
 
   results.forEach((result, i) => {
     const planner = planners[i];
-    const perspectiveName = PLANNER_PERSPECTIVES[i].split(' - ')[0];
+    const perspectiveName = perspectives[i].split(':')[0].trim();
 
     if (result.success) {
       const filename = `${planner.id}-${perspectiveName}.md`;
@@ -75,7 +89,7 @@ export const runPlanPhase = async (workingDir: string): Promise<{ success: boole
   console.log(chalk.dim('\n  Robot King synthesizing final plan...'));
 
   const allPlans = getPlans(workingDir);
-  const synthesisResult = await synthesizePlans(workingDir, state.description, allPlans);
+  const synthesisResult = await synthesizePlans(workingDir, state.description, allPlans, perspectives.length);
 
   if (!synthesisResult.success) {
     console.log(chalk.red('  ✗ Failed to synthesize plans'));
@@ -92,14 +106,75 @@ export const runPlanPhase = async (workingDir: string): Promise<{ success: boole
   return { success: true, questions: questions.length > 0 ? questions : undefined };
 };
 
+const analyzePlannerNeeds = async (
+  workingDir: string,
+  description: string,
+  findings: string
+): Promise<string[]> => {
+  const robotKing = createAgentConfig('robot-king', 0);
+
+  const result = await runAgent(robotKing, {
+    workingDir,
+    prompt: buildPlannerAnalysisPrompt(description, findings),
+    allowedTools: ['Read'],
+  });
+
+  if (!result.success) {
+    console.log(chalk.yellow('  ⚠ Robot King analysis failed, using default perspectives'));
+    return DEFAULT_PERSPECTIVES;
+  }
+
+  // Parse the perspectives from Robot King's output
+  const perspectives = parsePerspectives(result.output);
+
+  if (perspectives.length === 0) {
+    console.log(chalk.yellow('  ⚠ Could not parse perspectives, using defaults'));
+    return DEFAULT_PERSPECTIVES;
+  }
+
+  return perspectives;
+};
+
+const parsePerspectives = (output: string): string[] => {
+  const perspectives: string[] = [];
+
+  // Look for the PLANNER_PERSPECTIVES block
+  const match = output.match(/PLANNER_PERSPECTIVES:\s*([\s\S]*?)END_PERSPECTIVES/);
+  if (!match) {
+    return [];
+  }
+
+  const block = match[1];
+  const lines = block.split('\n');
+
+  for (const line of lines) {
+    // Match lines like "1. api-design: Focus on clean REST API design"
+    const lineMatch = line.match(/^\d+\.\s*(.+)$/);
+    if (lineMatch) {
+      const perspective = lineMatch[1].trim();
+      if (perspective) {
+        perspectives.push(perspective);
+      }
+    }
+  }
+
+  // Enforce limits: 1-5 planners
+  if (perspectives.length > 5) {
+    return perspectives.slice(0, 5);
+  }
+
+  return perspectives;
+};
+
 const synthesizePlans = async (
   workingDir: string,
   description: string,
-  plans: string
+  plans: string,
+  plannerCount: number
 ) => {
   const robotKing = createAgentConfig('robot-king', 0);
 
-  const prompt = `You are the Robot King. Three City Planners have proposed implementation approaches for this task:
+  const prompt = `You are the Robot King. ${plannerCount} City Planner(s) have proposed implementation approaches for this task:
 
 TASK: ${description}
 
