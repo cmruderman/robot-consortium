@@ -76,15 +76,15 @@ export const runAgent = async (
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    // Progress update interval (only when not verbose)
-    const progressInterval = !verbose ? setInterval(() => {
+    // Progress update interval (always runs so the user knows agents aren't frozen)
+    const progressInterval = setInterval(() => {
       const elapsed = Date.now() - startTime;
       const now = Date.now();
       if (now - lastProgressUpdate >= PROGRESS_INTERVAL) {
         console.log(chalk.dim(`  [${agent.id}] Still working... (${formatElapsed(elapsed)})`));
         lastProgressUpdate = now;
       }
-    }, PROGRESS_INTERVAL) : null;
+    }, PROGRESS_INTERVAL);
 
     // Write prompt to stdin and close it
     proc.stdin.write(prompt);
@@ -102,6 +102,8 @@ export const runAgent = async (
           if (i === lines.length - 1 && line === '') return;
           console.log(chalk.dim(`  [${agent.id}] `) + line);
         });
+        // Reset progress timer so "Still working..." only shows during silence
+        lastProgressUpdate = Date.now();
       }
     });
 
@@ -113,7 +115,7 @@ export const runAgent = async (
     });
 
     proc.on('close', (code) => {
-      if (progressInterval) clearInterval(progressInterval);
+      clearInterval(progressInterval);
       const elapsed = Date.now() - startTime;
 
       if (code === 0) {
@@ -133,7 +135,7 @@ export const runAgent = async (
     });
 
     proc.on('error', (err) => {
-      if (progressInterval) clearInterval(progressInterval);
+      clearInterval(progressInterval);
       console.log(chalk.red(`  [${agent.id}] Error: ${err.message}`));
       resolve({
         success: false,
