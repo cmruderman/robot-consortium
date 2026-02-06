@@ -20,6 +20,7 @@ export const initializeState = (workingDir: string, description: string, branchN
   fs.mkdirSync(stateDir, { recursive: true });
   fs.mkdirSync(path.join(stateDir, 'findings'), { recursive: true });
   fs.mkdirSync(path.join(stateDir, 'plans'), { recursive: true });
+  fs.mkdirSync(path.join(stateDir, 'critiques'), { recursive: true });
   fs.mkdirSync(path.join(stateDir, 'reviews'), { recursive: true });
 
   const state: ConsortiumState = {
@@ -37,6 +38,7 @@ export const initializeState = (workingDir: string, description: string, branchN
     costs: [],
     findings: [],
     plans: [],
+    critiques: [],
     reviews: [],
     branchName,
   };
@@ -182,6 +184,24 @@ export const setPlannerPerspectives = (workingDir: string, perspectives: string[
   if (!state) throw new Error('No active consortium found');
 
   state.plannerPerspectives = perspectives;
+  saveState(workingDir, state);
+};
+
+export const addCritique = (workingDir: string, filename: string, content: string): void => {
+  const state = loadState(workingDir);
+  if (!state) throw new Error('No active consortium found');
+
+  const critiquePath = path.join(getStateDir(workingDir), 'critiques', filename);
+  fs.writeFileSync(critiquePath, content);
+  state.critiques.push(filename);
+  saveState(workingDir, state);
+};
+
+export const setRatFocuses = (workingDir: string, focuses: string[]): void => {
+  const state = loadState(workingDir);
+  if (!state) throw new Error('No active consortium found');
+
+  state.ratFocuses = focuses;
   saveState(workingDir, state);
 };
 

@@ -10,6 +10,20 @@ const formatElapsed = (ms: number): string => {
   return `${minutes}m ${remainingSeconds}s`;
 };
 
+const extractSummary = (output: string): string => {
+  // Try to find a meaningful first line from the output for a completion summary
+  const lines = output.trim().split('\n');
+  for (const line of lines) {
+    const cleaned = line.replace(/^#+\s*/, '').trim();
+    // Skip empty lines, markdown separators, and very short lines
+    if (cleaned && cleaned.length > 10 && !cleaned.startsWith('---') && !cleaned.startsWith('```')) {
+      // Truncate to a reasonable length
+      return cleaned.length > 80 ? cleaned.slice(0, 77) + '...' : cleaned;
+    }
+  }
+  return '';
+};
+
 export interface AgentResult {
   success: boolean;
   output: string;
@@ -63,7 +77,8 @@ export const runAgent = async (
   }
 
   const startTime = Date.now();
-  console.log(chalk.dim(`  [${agent.id}] Starting (${agent.model})...`));
+  const focusLabel = agent.focus ? ` (${agent.focus.split(':')[0].trim()})` : '';
+  console.log(chalk.dim(`  [${agent.id}]${focusLabel} Starting (${agent.model})...`));
 
   return new Promise((resolve) => {
     let output = '';
@@ -81,7 +96,7 @@ export const runAgent = async (
       const elapsed = Date.now() - startTime;
       const now = Date.now();
       if (now - lastProgressUpdate >= PROGRESS_INTERVAL) {
-        console.log(chalk.dim(`  [${agent.id}] Still working... (${formatElapsed(elapsed)})`));
+        console.log(chalk.dim(`  [${agent.id}]${focusLabel} Still working... (${formatElapsed(elapsed)})`));
         lastProgressUpdate = now;
       }
     }, PROGRESS_INTERVAL);
@@ -119,13 +134,15 @@ export const runAgent = async (
       const elapsed = Date.now() - startTime;
 
       if (code === 0) {
-        console.log(chalk.green(`  [${agent.id}] Completed (${formatElapsed(elapsed)})`));
+        const summary = extractSummary(output);
+        const summaryText = summary ? ` — ${summary}` : '';
+        console.log(chalk.green(`  [${agent.id}]${focusLabel} Completed (${formatElapsed(elapsed)})${summaryText}`));
         resolve({
           success: true,
           output: output.trim(),
         });
       } else {
-        console.log(chalk.red(`  [${agent.id}] Failed (exit code ${code}, ${formatElapsed(elapsed)})`));
+        console.log(chalk.red(`  [${agent.id}]${focusLabel} Failed (exit code ${code}, ${formatElapsed(elapsed)})`));
         resolve({
           success: false,
           output: output.trim(),
@@ -256,6 +273,76 @@ Write a markdown plan with:
 - Risks and mitigations
 
 Think from your assigned perspective (${perspective}) but be practical.`;
+};
+
+export const buildRatPrompt = (
+  description: string,
+  findings: string,
+  plans: string,
+  focus: string
+): string => {
+  return `You are a Rat agent in the robot-consortium system. Your job is to find weaknesses, flaws, and gaps in the proposed implementation plans.
+
+TASK DESCRIPTION:
+${description}
+
+EXPLORATION FINDINGS:
+${findings}
+
+PROPOSED PLANS:
+${plans}
+
+YOUR CRITIQUE FOCUS: ${focus}
+
+INSTRUCTIONS:
+1. Read ALL proposed plans carefully
+2. Attack them from your assigned focus angle
+3. Reference the actual codebase to back up your critiques — don't just speculate
+4. Be specific: cite file paths, line numbers, and concrete scenarios
+5. Distinguish between critical flaws (must fix) and minor concerns (nice to fix)
+
+OUTPUT FORMAT:
+Write a markdown critique with:
+- Critical flaws found (things that will break or cause serious issues)
+- Concerns (things that could be problematic)
+- Missing considerations (gaps nobody addressed)
+- For each issue: which plan(s) it affects and why it matters
+
+Be adversarial but constructive. Your job is to make the final plan better by finding what the planners missed.`;
+};
+
+export const buildRatAnalysisPrompt = (
+  description: string,
+  plans: string
+): string => {
+  return `You are the Robot King. The City Planners have proposed implementation plans. Determine what critique angles are needed to stress-test these plans.
+
+TASK DESCRIPTION:
+${description}
+
+PROPOSED PLANS:
+${plans}
+
+INSTRUCTIONS:
+1. Read the plans and identify their assumptions, risks, and potential blind spots
+2. Determine 2-3 critique angles that would most effectively challenge these plans
+3. Each angle should target a DIFFERENT type of weakness
+
+COMMON ANGLES (choose what's relevant):
+- technical-flaws: Race conditions, edge cases, breaking changes, backwards compatibility
+- overengineering: Unnecessary complexity, scope creep, premature abstractions
+- missing-requirements: Gaps in coverage, untested paths, security holes
+- data-integrity: Migration safety, data loss risks, consistency issues
+- performance: Scalability concerns, N+1 queries, memory issues
+
+OUTPUT FORMAT (use exactly this format):
+RAT_FOCUSES:
+1. [kebab-case-name]: [one-line description of what to attack]
+2. [kebab-case-name]: [one-line description]
+3. [kebab-case-name]: [one-line description]
+END_RAT_FOCUSES
+
+Choose 2-3 focuses that will most effectively challenge THIS specific set of plans.`;
 };
 
 export const buildDawgPrompt = (
