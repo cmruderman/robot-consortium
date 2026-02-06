@@ -72,7 +72,11 @@ export const runOinkPhase = async (workingDir: string, phaseOptions: PhaseOption
   }));
 
   // Run pigs in parallel
-  const results = await runAgentsInParallel(pigs, options, phaseOptions.verbose);
+  const results = await runAgentsInParallel(pigs, options, {
+    verbose: phaseOptions.verbose,
+    phaseName: `PIGS [${pigs.length} checks]`,
+    phaseIcon: '🐷',
+  });
 
   // Process results
   const failedPigs: string[] = [];

@@ -2,7 +2,7 @@ export type Phase = 'INIT' | 'SURF' | 'PLAN' | 'BUILD' | 'OINK' | 'PR' | 'CI_CHE
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'blocked';
 
-export type AgentRole = 'robot-king' | 'surfer' | 'city-planner' | 'dawg' | 'pig';
+export type AgentRole = 'robot-king' | 'surfer' | 'city-planner' | 'rat' | 'dawg' | 'pig';
 
 export type Model = 'opus' | 'sonnet' | 'haiku';
 
@@ -56,6 +56,7 @@ export interface ConsortiumState {
   costs: CostEntry[];
   findings: string[];
   plans: string[];
+  critiques: string[];
   reviews: string[];
   finalPlan?: string;
   prUrl?: string;
@@ -64,18 +65,21 @@ export interface ConsortiumState {
   branchName?: string;
   surferFocuses?: string[];
   plannerPerspectives?: string[];
+  ratFocuses?: string[];
 }
 
 export const AGENT_MODELS: Record<AgentRole, Model> = {
   'robot-king': 'opus',
-  'surfer': 'opus',
+  'surfer': 'sonnet',
   'city-planner': 'opus',
+  'rat': 'sonnet',
   'dawg': 'opus',
-  'pig': 'opus',
+  'pig': 'sonnet',
 };
 
 export const PHASE_ORDER: Phase[] = ['INIT', 'SURF', 'PLAN', 'BUILD', 'OINK', 'PR', 'CI_CHECK', 'DONE'];
 
 export interface PhaseOptions {
   verbose?: boolean;
+  skipRats?: boolean;
 }

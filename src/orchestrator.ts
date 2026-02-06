@@ -41,13 +41,22 @@ const askYesNo = async (question: string): Promise<boolean> => {
 export interface RunOptions {
   yes?: boolean;
   verbose?: boolean;
+  skipOink?: boolean;
+  skipCi?: boolean;
+  skipRats?: boolean;
 }
 
 let verboseMode = false;
+let skipOink = false;
+let skipCi = false;
+let skipRats = false;
 
 export const runConsortium = async (workingDir: string, options: RunOptions = {}): Promise<void> => {
   autoYes = options.yes ?? false;
   verboseMode = options.verbose ?? false;
+  skipOink = options.skipOink ?? false;
+  skipCi = options.skipCi ?? false;
+  skipRats = options.skipRats ?? false;
 
   const state = loadState(workingDir);
   if (!state) {
@@ -65,7 +74,16 @@ export const runConsortium = async (workingDir: string, options: RunOptions = {}
   if (verboseMode) {
     console.log(chalk.yellow('   Mode: Verbose (--verbose)'));
   }
-  if (autoYes || verboseMode) {
+  if (skipOink) {
+    console.log(chalk.yellow('   Mode: Skip OINK (--skip-oink)'));
+  }
+  if (skipCi) {
+    console.log(chalk.yellow('   Mode: Skip CI (--skip-ci)'));
+  }
+  if (skipRats) {
+    console.log(chalk.yellow('   Mode: Skip Rats (--skip-rats)'));
+  }
+  if (autoYes || verboseMode || skipOink || skipCi || skipRats) {
     console.log('');
   }
 
@@ -121,7 +139,7 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
       }
 
       case 'PLAN': {
-        const planResult = await runPlanPhase(workingDir, { verbose: verboseMode });
+        const planResult = await runPlanPhase(workingDir, { verbose: verboseMode, skipRats });
 
         if (!planResult.success) {
           console.log(chalk.red('\n❌ PLAN phase failed. Please review and retry.'));
@@ -169,6 +187,11 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
       }
 
       case 'OINK': {
+        if (skipOink) {
+          console.log(chalk.yellow('\n⏭️  Skipping OINK phase (--skip-oink)'));
+          break;
+        }
+
         const oinkResult = await runOinkPhase(workingDir, { verbose: verboseMode });
 
         if (!oinkResult.success) {
@@ -210,6 +233,12 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
       }
 
       case 'CI_CHECK': {
+        if (skipCi || skipOink) {
+          console.log(chalk.yellow(`\n⏭️  Skipping CI_CHECK phase (${skipOink ? '--skip-oink' : '--skip-ci'})`));
+          updatePhase(workingDir, 'DONE');
+          break;
+        }
+
         const ciResult = await runCICheckPhase(workingDir, { verbose: verboseMode });
 
         if (!ciResult.success) {

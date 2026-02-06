@@ -22,6 +22,9 @@ interface StartOptions {
   verbose?: boolean;
   branch?: string;
   noBranch?: boolean;
+  skipOink?: boolean;
+  skipCi?: boolean;
+  skipRats?: boolean;
 }
 
 const resolveDescription = async (
@@ -103,6 +106,9 @@ program
   .option('-v, --verbose', 'Stream agent output in real-time')
   .option('-b, --branch <name>', 'Branch name to create (auto-generated if not provided)')
   .option('--no-branch', 'Skip branch creation (use current branch)')
+  .option('--skip-oink', 'Skip the OINK verification phase')
+  .option('--skip-ci', 'Skip the CI_CHECK phase')
+  .option('--skip-rats', 'Skip the Rat challenge phase during planning')
   .action(async (inlineDescription: string | undefined, options: StartOptions) => {
     const workingDir = options.directory || process.cwd();
 
@@ -200,7 +206,13 @@ program
     console.log(chalk.green('   ✓ Consortium initialized\n'));
 
     // Start running
-    await runConsortium(workingDir, { yes: options.yes, verbose: options.verbose });
+    await runConsortium(workingDir, {
+      yes: options.yes,
+      verbose: options.verbose,
+      skipOink: options.skipOink,
+      skipCi: options.skipCi,
+      skipRats: options.skipRats,
+    });
   });
 
 program
@@ -209,7 +221,10 @@ program
   .option('-d, --directory <path>', 'Working directory (defaults to current)')
   .option('-y, --yes', 'Auto-proceed through all checkpoints without prompting')
   .option('-v, --verbose', 'Stream agent output in real-time')
-  .action(async (options: { directory?: string; yes?: boolean; verbose?: boolean }) => {
+  .option('--skip-oink', 'Skip the OINK verification phase')
+  .option('--skip-ci', 'Skip the CI_CHECK phase')
+  .option('--skip-rats', 'Skip the Rat challenge phase during planning')
+  .action(async (options: { directory?: string; yes?: boolean; verbose?: boolean; skipOink?: boolean; skipCi?: boolean; skipRats?: boolean }) => {
     const workingDir = options.directory || process.cwd();
 
     const state = loadState(workingDir);
@@ -230,7 +245,13 @@ program
       process.exit(1);
     }
 
-    await runConsortium(workingDir, { yes: options.yes, verbose: options.verbose });
+    await runConsortium(workingDir, {
+      yes: options.yes,
+      verbose: options.verbose,
+      skipOink: options.skipOink,
+      skipCi: options.skipCi,
+      skipRats: options.skipRats,
+    });
   });
 
 program

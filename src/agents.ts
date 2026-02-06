@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { AgentConfig, AgentRole, AGENT_MODELS, Model } from './types.js';
+import { PhaseDisplay } from './display.js';
 import chalk from 'chalk';
 
 const formatElapsed = (ms: number): string => {
@@ -8,6 +9,20 @@ const formatElapsed = (ms: number): string => {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
   return `${minutes}m ${remainingSeconds}s`;
+};
+
+const extractSummary = (output: string): string => {
+  // Try to find a meaningful first line from the output for a completion summary
+  const lines = output.trim().split('\n');
+  for (const line of lines) {
+    const cleaned = line.replace(/^#+\s*/, '').trim();
+    // Skip empty lines, markdown separators, and very short lines
+    if (cleaned && cleaned.length > 10 && !cleaned.startsWith('---') && !cleaned.startsWith('```')) {
+      // Truncate to a reasonable length
+      return cleaned.length > 80 ? cleaned.slice(0, 77) + '...' : cleaned;
+    }
+  }
+  return '';
 };
 
 export interface AgentResult {
@@ -24,6 +39,7 @@ export interface AgentOptions {
   allowedTools?: string[];
   outputFile?: string;
   verbose?: boolean;
+  display?: PhaseDisplay;
 }
 
 const MODEL_MAP: Record<Model, string> = {
@@ -45,7 +61,7 @@ export const runAgent = async (
   agent: AgentConfig,
   options: AgentOptions
 ): Promise<AgentResult> => {
-  const { workingDir, prompt, systemPrompt, allowedTools, verbose } = options;
+  const { workingDir, prompt, systemPrompt, allowedTools, verbose, display } = options;
 
   const args: string[] = [
     '--print',
@@ -63,28 +79,36 @@ export const runAgent = async (
   }
 
   const startTime = Date.now();
-  console.log(chalk.dim(`  [${agent.id}] Starting (${agent.model})...`));
+  const focusLabel = agent.focus ? ` (${agent.focus.split(':')[0].trim()})` : '';
+
+  // When using a display, the display handles all status rendering.
+  // When not using a display (solo agent like Robot King), use console.log.
+  if (!display) {
+    console.log(chalk.dim(`  [${agent.id}]${focusLabel} Starting (${agent.model})...`));
+  }
 
   return new Promise((resolve) => {
     let output = '';
     let errorOutput = '';
     let lastProgressUpdate = Date.now();
-    const PROGRESS_INTERVAL = 15000; // Update every 15 seconds
+    const PROGRESS_INTERVAL = 15000;
 
     const proc = spawn('claude', args, {
       cwd: workingDir,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    // Progress update interval (always runs so the user knows agents aren't frozen)
-    const progressInterval = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      const now = Date.now();
-      if (now - lastProgressUpdate >= PROGRESS_INTERVAL) {
-        console.log(chalk.dim(`  [${agent.id}] Still working... (${formatElapsed(elapsed)})`));
-        lastProgressUpdate = now;
-      }
-    }, PROGRESS_INTERVAL);
+    // Progress update interval — only for solo agents (display handles its own timing)
+    const progressInterval = !display
+      ? setInterval(() => {
+          const elapsed = Date.now() - startTime;
+          const now = Date.now();
+          if (now - lastProgressUpdate >= PROGRESS_INTERVAL) {
+            console.log(chalk.dim(`  [${agent.id}]${focusLabel} Still working... (${formatElapsed(elapsed)})`));
+            lastProgressUpdate = now;
+          }
+        }, PROGRESS_INTERVAL)
+      : null;
 
     // Write prompt to stdin and close it
     proc.stdin.write(prompt);
@@ -94,38 +118,45 @@ export const runAgent = async (
       const text = data.toString();
       output += text;
 
-      if (verbose) {
-        // Stream output with agent prefix
+      if (verbose && !display) {
         const lines = text.split('\n');
         lines.forEach((line: string, i: number) => {
-          // Don't print empty trailing line from split
           if (i === lines.length - 1 && line === '') return;
           console.log(chalk.dim(`  [${agent.id}] `) + line);
         });
-        // Reset progress timer so "Still working..." only shows during silence
         lastProgressUpdate = Date.now();
       }
     });
 
     proc.stderr.on('data', (data) => {
       errorOutput += data.toString();
-      if (verbose) {
+      if (verbose && !display) {
         console.log(chalk.yellow(`  [${agent.id}] `) + data.toString().trim());
       }
     });
 
     proc.on('close', (code) => {
-      clearInterval(progressInterval);
+      if (progressInterval) clearInterval(progressInterval);
       const elapsed = Date.now() - startTime;
 
       if (code === 0) {
-        console.log(chalk.green(`  [${agent.id}] Completed (${formatElapsed(elapsed)})`));
+        const summary = extractSummary(output);
+        if (display) {
+          display.markDone(agent.id, summary);
+        } else {
+          const summaryText = summary ? ` — ${summary}` : '';
+          console.log(chalk.green(`  [${agent.id}]${focusLabel} Completed (${formatElapsed(elapsed)})${summaryText}`));
+        }
         resolve({
           success: true,
           output: output.trim(),
         });
       } else {
-        console.log(chalk.red(`  [${agent.id}] Failed (exit code ${code}, ${formatElapsed(elapsed)})`));
+        if (display) {
+          display.markFailed(agent.id, errorOutput || `exit code ${code}`);
+        } else {
+          console.log(chalk.red(`  [${agent.id}]${focusLabel} Failed (exit code ${code}, ${formatElapsed(elapsed)})`));
+        }
         resolve({
           success: false,
           output: output.trim(),
@@ -135,8 +166,12 @@ export const runAgent = async (
     });
 
     proc.on('error', (err) => {
-      clearInterval(progressInterval);
-      console.log(chalk.red(`  [${agent.id}] Error: ${err.message}`));
+      if (progressInterval) clearInterval(progressInterval);
+      if (display) {
+        display.markFailed(agent.id, err.message);
+      } else {
+        console.log(chalk.red(`  [${agent.id}] Error: ${err.message}`));
+      }
       resolve({
         success: false,
         output: '',
@@ -146,23 +181,51 @@ export const runAgent = async (
   });
 };
 
+export interface ParallelOptions {
+  verbose?: boolean;
+  phaseName?: string;
+  phaseIcon?: string;
+}
+
 export const runAgentsInParallel = async (
   agents: AgentConfig[],
   optionsPerAgent: AgentOptions[],
-  verbose?: boolean
+  parallelOpts: ParallelOptions = {}
 ): Promise<AgentResult[]> => {
   if (agents.length !== optionsPerAgent.length) {
     throw new Error('Agents and options arrays must have the same length');
   }
 
-  // Pass verbose to each agent's options
-  const optionsWithVerbose = optionsPerAgent.map((opt) => ({
+  const { verbose, phaseName, phaseIcon } = parallelOpts;
+
+  // Create a display if we have a phase name (otherwise fall back to plain logging)
+  const display = phaseName
+    ? new PhaseDisplay(phaseName, phaseIcon ?? '>', verbose)
+    : null;
+
+  if (display) {
+    // Register all agents before starting
+    for (const agent of agents) {
+      const focus = agent.focus ?? agent.role;
+      display.registerAgent(agent.id, focus, agent.model);
+    }
+    display.start();
+  }
+
+  const optionsWithContext = optionsPerAgent.map((opt) => ({
     ...opt,
     verbose: verbose ?? opt.verbose,
+    display: display ?? undefined,
   }));
 
-  const promises = agents.map((agent, i) => runAgent(agent, optionsWithVerbose[i]));
-  return Promise.all(promises);
+  const promises = agents.map((agent, i) => runAgent(agent, optionsWithContext[i]));
+  const results = await Promise.all(promises);
+
+  if (display) {
+    display.stop();
+  }
+
+  return results;
 };
 
 export const buildSurferPrompt = (description: string, focus: string): string => {
@@ -256,6 +319,76 @@ Write a markdown plan with:
 - Risks and mitigations
 
 Think from your assigned perspective (${perspective}) but be practical.`;
+};
+
+export const buildRatPrompt = (
+  description: string,
+  findings: string,
+  plans: string,
+  focus: string
+): string => {
+  return `You are a Rat agent in the robot-consortium system. Your job is to find weaknesses, flaws, and gaps in the proposed implementation plans.
+
+TASK DESCRIPTION:
+${description}
+
+EXPLORATION FINDINGS:
+${findings}
+
+PROPOSED PLANS:
+${plans}
+
+YOUR CRITIQUE FOCUS: ${focus}
+
+INSTRUCTIONS:
+1. Read ALL proposed plans carefully
+2. Attack them from your assigned focus angle
+3. Reference the actual codebase to back up your critiques — don't just speculate
+4. Be specific: cite file paths, line numbers, and concrete scenarios
+5. Distinguish between critical flaws (must fix) and minor concerns (nice to fix)
+
+OUTPUT FORMAT:
+Write a markdown critique with:
+- Critical flaws found (things that will break or cause serious issues)
+- Concerns (things that could be problematic)
+- Missing considerations (gaps nobody addressed)
+- For each issue: which plan(s) it affects and why it matters
+
+Be adversarial but constructive. Your job is to make the final plan better by finding what the planners missed.`;
+};
+
+export const buildRatAnalysisPrompt = (
+  description: string,
+  plans: string
+): string => {
+  return `You are the Robot King. The City Planners have proposed implementation plans. Determine what critique angles are needed to stress-test these plans.
+
+TASK DESCRIPTION:
+${description}
+
+PROPOSED PLANS:
+${plans}
+
+INSTRUCTIONS:
+1. Read the plans and identify their assumptions, risks, and potential blind spots
+2. Determine 2-3 critique angles that would most effectively challenge these plans
+3. Each angle should target a DIFFERENT type of weakness
+
+COMMON ANGLES (choose what's relevant):
+- technical-flaws: Race conditions, edge cases, breaking changes, backwards compatibility
+- overengineering: Unnecessary complexity, scope creep, premature abstractions
+- missing-requirements: Gaps in coverage, untested paths, security holes
+- data-integrity: Migration safety, data loss risks, consistency issues
+- performance: Scalability concerns, N+1 queries, memory issues
+
+OUTPUT FORMAT (use exactly this format):
+RAT_FOCUSES:
+1. [kebab-case-name]: [one-line description of what to attack]
+2. [kebab-case-name]: [one-line description]
+3. [kebab-case-name]: [one-line description]
+END_RAT_FOCUSES
+
+Choose 2-3 focuses that will most effectively challenge THIS specific set of plans.`;
 };
 
 export const buildDawgPrompt = (
