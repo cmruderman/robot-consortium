@@ -64,7 +64,11 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
       allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash(yarn*)', 'Bash(npm*)', 'Bash(git diff*)'],
     }));
 
-    const results = await runAgentsInParallel(dawgs, options, phaseOptions.verbose);
+    const results = await runAgentsInParallel(dawgs, options, {
+      verbose: phaseOptions.verbose,
+      phaseName: `DAWGS [${independentTasks.length} parallel tasks]`,
+      phaseIcon: '🐕',
+    });
 
     results.forEach((result, i) => {
       const task = independentTasks[i];

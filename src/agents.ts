@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { AgentConfig, AgentRole, AGENT_MODELS, Model } from './types.js';
+import { PhaseDisplay } from './display.js';
 import chalk from 'chalk';
 
 const formatElapsed = (ms: number): string => {
@@ -38,6 +39,7 @@ export interface AgentOptions {
   allowedTools?: string[];
   outputFile?: string;
   verbose?: boolean;
+  display?: PhaseDisplay;
 }
 
 const MODEL_MAP: Record<Model, string> = {
@@ -59,7 +61,7 @@ export const runAgent = async (
   agent: AgentConfig,
   options: AgentOptions
 ): Promise<AgentResult> => {
-  const { workingDir, prompt, systemPrompt, allowedTools, verbose } = options;
+  const { workingDir, prompt, systemPrompt, allowedTools, verbose, display } = options;
 
   const args: string[] = [
     '--print',
@@ -78,28 +80,35 @@ export const runAgent = async (
 
   const startTime = Date.now();
   const focusLabel = agent.focus ? ` (${agent.focus.split(':')[0].trim()})` : '';
-  console.log(chalk.dim(`  [${agent.id}]${focusLabel} Starting (${agent.model})...`));
+
+  // When using a display, the display handles all status rendering.
+  // When not using a display (solo agent like Robot King), use console.log.
+  if (!display) {
+    console.log(chalk.dim(`  [${agent.id}]${focusLabel} Starting (${agent.model})...`));
+  }
 
   return new Promise((resolve) => {
     let output = '';
     let errorOutput = '';
     let lastProgressUpdate = Date.now();
-    const PROGRESS_INTERVAL = 15000; // Update every 15 seconds
+    const PROGRESS_INTERVAL = 15000;
 
     const proc = spawn('claude', args, {
       cwd: workingDir,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    // Progress update interval (always runs so the user knows agents aren't frozen)
-    const progressInterval = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      const now = Date.now();
-      if (now - lastProgressUpdate >= PROGRESS_INTERVAL) {
-        console.log(chalk.dim(`  [${agent.id}]${focusLabel} Still working... (${formatElapsed(elapsed)})`));
-        lastProgressUpdate = now;
-      }
-    }, PROGRESS_INTERVAL);
+    // Progress update interval — only for solo agents (display handles its own timing)
+    const progressInterval = !display
+      ? setInterval(() => {
+          const elapsed = Date.now() - startTime;
+          const now = Date.now();
+          if (now - lastProgressUpdate >= PROGRESS_INTERVAL) {
+            console.log(chalk.dim(`  [${agent.id}]${focusLabel} Still working... (${formatElapsed(elapsed)})`));
+            lastProgressUpdate = now;
+          }
+        }, PROGRESS_INTERVAL)
+      : null;
 
     // Write prompt to stdin and close it
     proc.stdin.write(prompt);
@@ -109,40 +118,45 @@ export const runAgent = async (
       const text = data.toString();
       output += text;
 
-      if (verbose) {
-        // Stream output with agent prefix
+      if (verbose && !display) {
         const lines = text.split('\n');
         lines.forEach((line: string, i: number) => {
-          // Don't print empty trailing line from split
           if (i === lines.length - 1 && line === '') return;
           console.log(chalk.dim(`  [${agent.id}] `) + line);
         });
-        // Reset progress timer so "Still working..." only shows during silence
         lastProgressUpdate = Date.now();
       }
     });
 
     proc.stderr.on('data', (data) => {
       errorOutput += data.toString();
-      if (verbose) {
+      if (verbose && !display) {
         console.log(chalk.yellow(`  [${agent.id}] `) + data.toString().trim());
       }
     });
 
     proc.on('close', (code) => {
-      clearInterval(progressInterval);
+      if (progressInterval) clearInterval(progressInterval);
       const elapsed = Date.now() - startTime;
 
       if (code === 0) {
         const summary = extractSummary(output);
-        const summaryText = summary ? ` — ${summary}` : '';
-        console.log(chalk.green(`  [${agent.id}]${focusLabel} Completed (${formatElapsed(elapsed)})${summaryText}`));
+        if (display) {
+          display.markDone(agent.id, summary);
+        } else {
+          const summaryText = summary ? ` — ${summary}` : '';
+          console.log(chalk.green(`  [${agent.id}]${focusLabel} Completed (${formatElapsed(elapsed)})${summaryText}`));
+        }
         resolve({
           success: true,
           output: output.trim(),
         });
       } else {
-        console.log(chalk.red(`  [${agent.id}]${focusLabel} Failed (exit code ${code}, ${formatElapsed(elapsed)})`));
+        if (display) {
+          display.markFailed(agent.id, errorOutput || `exit code ${code}`);
+        } else {
+          console.log(chalk.red(`  [${agent.id}]${focusLabel} Failed (exit code ${code}, ${formatElapsed(elapsed)})`));
+        }
         resolve({
           success: false,
           output: output.trim(),
@@ -152,8 +166,12 @@ export const runAgent = async (
     });
 
     proc.on('error', (err) => {
-      clearInterval(progressInterval);
-      console.log(chalk.red(`  [${agent.id}] Error: ${err.message}`));
+      if (progressInterval) clearInterval(progressInterval);
+      if (display) {
+        display.markFailed(agent.id, err.message);
+      } else {
+        console.log(chalk.red(`  [${agent.id}] Error: ${err.message}`));
+      }
       resolve({
         success: false,
         output: '',
@@ -163,23 +181,51 @@ export const runAgent = async (
   });
 };
 
+export interface ParallelOptions {
+  verbose?: boolean;
+  phaseName?: string;
+  phaseIcon?: string;
+}
+
 export const runAgentsInParallel = async (
   agents: AgentConfig[],
   optionsPerAgent: AgentOptions[],
-  verbose?: boolean
+  parallelOpts: ParallelOptions = {}
 ): Promise<AgentResult[]> => {
   if (agents.length !== optionsPerAgent.length) {
     throw new Error('Agents and options arrays must have the same length');
   }
 
-  // Pass verbose to each agent's options
-  const optionsWithVerbose = optionsPerAgent.map((opt) => ({
+  const { verbose, phaseName, phaseIcon } = parallelOpts;
+
+  // Create a display if we have a phase name (otherwise fall back to plain logging)
+  const display = phaseName
+    ? new PhaseDisplay(phaseName, phaseIcon ?? '>', verbose)
+    : null;
+
+  if (display) {
+    // Register all agents before starting
+    for (const agent of agents) {
+      const focus = agent.focus ?? agent.role;
+      display.registerAgent(agent.id, focus, agent.model);
+    }
+    display.start();
+  }
+
+  const optionsWithContext = optionsPerAgent.map((opt) => ({
     ...opt,
     verbose: verbose ?? opt.verbose,
+    display: display ?? undefined,
   }));
 
-  const promises = agents.map((agent, i) => runAgent(agent, optionsWithVerbose[i]));
-  return Promise.all(promises);
+  const promises = agents.map((agent, i) => runAgent(agent, optionsWithContext[i]));
+  const results = await Promise.all(promises);
+
+  if (display) {
+    display.stop();
+  }
+
+  return results;
 };
 
 export const buildSurferPrompt = (description: string, focus: string): string => {

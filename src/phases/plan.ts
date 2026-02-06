@@ -53,7 +53,11 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
   }));
 
   // Run planners in parallel
-  const results = await runAgentsInParallel(planners, options, phaseOptions.verbose);
+  const results = await runAgentsInParallel(planners, options, {
+    verbose: phaseOptions.verbose,
+    phaseName: `PLANNERS [${perspectives.length} agents]`,
+    phaseIcon: '📋',
+  });
 
   // Process results
   const failedPlanners: string[] = [];
@@ -225,7 +229,11 @@ const runRatPhase = async (
   }));
 
   // Run rats in parallel
-  const results = await runAgentsInParallel(rats, options, verbose);
+  const results = await runAgentsInParallel(rats, options, {
+    verbose,
+    phaseName: `RATS [${focuses.length} agents]`,
+    phaseIcon: '🐀',
+  });
 
   // Process results
   let allCritiques = '';

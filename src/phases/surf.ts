@@ -47,7 +47,11 @@ export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOption
   }));
 
   // Run surfers in parallel
-  const results = await runAgentsInParallel(surfers, options, phaseOptions.verbose);
+  const results = await runAgentsInParallel(surfers, options, {
+    verbose: phaseOptions.verbose,
+    phaseName: `SURFERS [${focuses.length} agents]`,
+    phaseIcon: '🏄',
+  });
 
   // Process results
   const failedSurfers: string[] = [];
