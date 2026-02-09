@@ -20,6 +20,7 @@ export const initializeState = (workingDir: string, description: string, branchN
   fs.mkdirSync(stateDir, { recursive: true });
   fs.mkdirSync(path.join(stateDir, 'findings'), { recursive: true });
   fs.mkdirSync(path.join(stateDir, 'plans'), { recursive: true });
+  fs.mkdirSync(path.join(stateDir, 'critiques'), { recursive: true });
   fs.mkdirSync(path.join(stateDir, 'reviews'), { recursive: true });
 
   const state: ConsortiumState = {
@@ -37,6 +38,7 @@ export const initializeState = (workingDir: string, description: string, branchN
     costs: [],
     findings: [],
     plans: [],
+    critiques: [],
     reviews: [],
     branchName,
   };
@@ -185,6 +187,24 @@ export const setPlannerPerspectives = (workingDir: string, perspectives: string[
   saveState(workingDir, state);
 };
 
+export const addCritique = (workingDir: string, filename: string, content: string): void => {
+  const state = loadState(workingDir);
+  if (!state) throw new Error('No active consortium found');
+
+  const critiquePath = path.join(getStateDir(workingDir), 'critiques', filename);
+  fs.writeFileSync(critiquePath, content);
+  state.critiques.push(filename);
+  saveState(workingDir, state);
+};
+
+export const setRatFocuses = (workingDir: string, focuses: string[]): void => {
+  const state = loadState(workingDir);
+  if (!state) throw new Error('No active consortium found');
+
+  state.ratFocuses = focuses;
+  saveState(workingDir, state);
+};
+
 export const addReview = (workingDir: string, filename: string, content: string): void => {
   const state = loadState(workingDir);
   if (!state) throw new Error('No active consortium found');
@@ -193,6 +213,44 @@ export const addReview = (workingDir: string, filename: string, content: string)
   fs.writeFileSync(reviewPath, content);
   state.reviews.push(filename);
   saveState(workingDir, state);
+};
+
+export const setConventions = (workingDir: string, content: string): void => {
+  const state = loadState(workingDir);
+  if (!state) throw new Error('No active consortium found');
+
+  const conventionsPath = path.join(getStateDir(workingDir), 'conventions.md');
+  fs.writeFileSync(conventionsPath, content);
+  state.conventions = 'conventions.md';
+  saveState(workingDir, state);
+};
+
+export const getConventions = (workingDir: string): string => {
+  const state = loadState(workingDir);
+  if (!state || !state.conventions) return '';
+
+  const conventionsPath = path.join(getStateDir(workingDir), state.conventions);
+  if (!fs.existsSync(conventionsPath)) return '';
+  return fs.readFileSync(conventionsPath, 'utf-8');
+};
+
+export const setCodePatterns = (workingDir: string, content: string): void => {
+  const state = loadState(workingDir);
+  if (!state) throw new Error('No active consortium found');
+
+  const patternsPath = path.join(getStateDir(workingDir), 'code-patterns.md');
+  fs.writeFileSync(patternsPath, content);
+  state.codePatterns = 'code-patterns.md';
+  saveState(workingDir, state);
+};
+
+export const getCodePatterns = (workingDir: string): string => {
+  const state = loadState(workingDir);
+  if (!state || !state.codePatterns) return '';
+
+  const patternsPath = path.join(getStateDir(workingDir), state.codePatterns);
+  if (!fs.existsSync(patternsPath)) return '';
+  return fs.readFileSync(patternsPath, 'utf-8');
 };
 
 export const getTotalCost = (workingDir: string): number => {

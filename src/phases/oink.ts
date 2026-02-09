@@ -16,7 +16,7 @@ export interface OinkResult {
 
 export const runOinkPhase = async (workingDir: string, phaseOptions: PhaseOptions = {}): Promise<OinkResult> => {
   console.log(chalk.cyan('\n🐷 PHASE 4: OINK'));
-  console.log(chalk.dim('  Deploying Pigs to verify the implementation...\n'));
+  console.log(chalk.dim('  Final verification sweep (per-task checks already ran)...\n'));
 
   const state = loadState(workingDir);
   if (!state) {
@@ -72,7 +72,11 @@ export const runOinkPhase = async (workingDir: string, phaseOptions: PhaseOption
   }));
 
   // Run pigs in parallel
-  const results = await runAgentsInParallel(pigs, options, phaseOptions.verbose);
+  const results = await runAgentsInParallel(pigs, options, {
+    verbose: phaseOptions.verbose,
+    phaseName: `PIGS [${pigs.length} checks]`,
+    phaseIcon: '🐷',
+  });
 
   // Process results
   const failedPigs: string[] = [];

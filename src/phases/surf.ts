@@ -2,8 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
-import { loadState, updatePhase, addFinding, getStateDir, setSurferFocuses } from '../state.js';
-import { createAgentConfig, runAgentsInParallel, runAgent, buildSurferPrompt, buildSurferAnalysisPrompt } from '../agents.js';
+import { loadState, updatePhase, addFinding, getStateDir, setSurferFocuses, setConventions, setCodePatterns, getConventions, getCodePatterns } from '../state.js';
+import { createAgentConfig, runAgentsInParallel, runAgent, buildSurferPrompt, buildSurferAnalysisPrompt, buildConventionsSurferPrompt } from '../agents.js';
+
+const CONVENTIONS_FOCUS = 'project-conventions: Extract project conventions from CLAUDE.md, .claude/commands/, config files';
 
 const DEFAULT_FOCUSES = [
   'existing-patterns: existing patterns and conventions in the codebase',
@@ -23,31 +25,40 @@ export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOption
 
   // Have Robot King analyze task and determine surfer focuses
   console.log(chalk.dim('  Robot King analyzing task to determine exploration focuses...\n'));
-  const focuses = await analyzeSurferNeeds(workingDir, state.description, phaseOptions.verbose);
+  const dynamicFocuses = await analyzeSurferNeeds(workingDir, state.description, phaseOptions.verbose);
+
+  // Always prepend mandatory project-conventions surfer
+  const allFocuses = [CONVENTIONS_FOCUS, ...dynamicFocuses];
 
   // Store focuses in state for reference
-  setSurferFocuses(workingDir, focuses);
+  setSurferFocuses(workingDir, allFocuses);
 
-  console.log(chalk.green(`  ✓ Robot King determined ${focuses.length} surfer(s) needed:`));
-  focuses.forEach((f) => {
+  console.log(chalk.green(`  ✓ Robot King determined ${allFocuses.length} surfer(s) needed:`));
+  allFocuses.forEach((f) => {
     const [name, desc] = f.split(':').map((s) => s.trim());
     console.log(chalk.dim(`    - ${name}: ${desc || 'no description'}`));
   });
 
-  console.log(chalk.dim(`\n  Deploying ${focuses.length} Surfer(s)...\n`));
+  console.log(chalk.dim(`\n  Deploying ${allFocuses.length} Surfer(s)...\n`));
 
   // Create surfer agents with dynamic focuses
-  const surfers = focuses.map((focus, i) => createAgentConfig('surfer', i + 1, focus));
+  const surfers = allFocuses.map((focus, i) => createAgentConfig('surfer', i + 1, focus));
 
-  // Build prompts for each surfer
-  const options = surfers.map((surfer) => ({
+  // Build prompts — conventions surfer gets a special prompt, others get the structured prompt
+  const options = surfers.map((surfer, i) => ({
     workingDir,
-    prompt: buildSurferPrompt(state.description, surfer.focus!),
+    prompt: i === 0
+      ? buildConventionsSurferPrompt(state.description)
+      : buildSurferPrompt(state.description, surfer.focus!),
     allowedTools: ['Read', 'Glob', 'Grep', 'Bash(git log*)', 'Bash(git show*)'],
   }));
 
   // Run surfers in parallel
-  const results = await runAgentsInParallel(surfers, options, phaseOptions.verbose);
+  const results = await runAgentsInParallel(surfers, options, {
+    verbose: phaseOptions.verbose,
+    phaseName: `SURFERS [${allFocuses.length} agents]`,
+    phaseIcon: '🏄',
+  });
 
   // Process results
   const failedSurfers: string[] = [];
@@ -55,7 +66,7 @@ export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOption
 
   results.forEach((result, i) => {
     const surfer = surfers[i];
-    const focusName = focuses[i].split(':')[0].trim();
+    const focusName = allFocuses[i].split(':')[0].trim();
 
     if (result.success) {
       const filename = `${surfer.id}-${focusName}.md`;
@@ -75,8 +86,28 @@ export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOption
     }
   });
 
-  if (failedSurfers.length > 0) {
-    console.log(chalk.red(`\n  ${failedSurfers.length} surfer(s) failed. Surface to user.`));
+  // Separate conventions from code patterns
+  const conventionsResult = results[0]; // First surfer is always conventions
+  if (conventionsResult.success) {
+    setConventions(workingDir, conventionsResult.output);
+    console.log(chalk.green('  ✓ Project conventions extracted'));
+  } else {
+    console.log(chalk.yellow('  ⚠ Conventions surfer failed — proceeding without conventions'));
+  }
+
+  // Combine all non-conventions findings as structured code patterns
+  const codePatternOutputs = results.slice(1)
+    .filter(r => r.success)
+    .map(r => r.output);
+  if (codePatternOutputs.length > 0) {
+    setCodePatterns(workingDir, codePatternOutputs.join('\n\n---\n\n'));
+    console.log(chalk.green(`  ✓ Code patterns extracted from ${codePatternOutputs.length} surfer(s)`));
+  }
+
+  // Allow conventions surfer to fail without blocking the phase
+  const nonConventionFailures = failedSurfers.filter(id => id !== surfers[0].id);
+  if (nonConventionFailures.length > 0) {
+    console.log(chalk.red(`\n  ${nonConventionFailures.length} surfer(s) failed. Surface to user.`));
     return { success: false };
   }
 
@@ -143,9 +174,9 @@ const parseSurferFocuses = (output: string): string[] => {
     }
   }
 
-  // Enforce limits: 2-5 surfers
-  if (focuses.length > 5) {
-    return focuses.slice(0, 5);
+  // Enforce limits: 2-4 dynamic surfers (conventions surfer is added separately)
+  if (focuses.length > 4) {
+    return focuses.slice(0, 4);
   }
   if (focuses.length < 2) {
     return DEFAULT_FOCUSES;
@@ -169,4 +200,12 @@ export const getSurfFindings = (workingDir: string): string => {
   }
 
   return combined;
+};
+
+export const getSurfConventions = (workingDir: string): string => {
+  return getConventions(workingDir);
+};
+
+export const getSurfCodePatterns = (workingDir: string): string => {
+  return getCodePatterns(workingDir);
 };

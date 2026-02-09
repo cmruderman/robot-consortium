@@ -1,13 +1,22 @@
 import { spawn } from 'child_process';
 import { AgentConfig, AgentRole, AGENT_MODELS, Model } from './types.js';
+import { PhaseDisplay, formatElapsed } from './display.js';
 import chalk from 'chalk';
 
-const formatElapsed = (ms: number): string => {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${minutes}m ${remainingSeconds}s`;
+const extractSummary = (output: string): string => {
+  // Try to find a meaningful first line from the output for a completion summary
+  const lines = output.trim().split('\n');
+  for (const line of lines) {
+    // Skip pure markdown headers (e.g. "# Findings"), separators, and code fences
+    if (/^#+\s*\S+$/.test(line.trim())) continue;
+    if (line.trim().startsWith('---') || line.trim().startsWith('```')) continue;
+
+    const cleaned = line.replace(/^#+\s*/, '').trim();
+    if (cleaned && cleaned.length > 10) {
+      return cleaned.length > 80 ? cleaned.slice(0, 77) + '...' : cleaned;
+    }
+  }
+  return '';
 };
 
 export interface AgentResult {
@@ -24,6 +33,8 @@ export interface AgentOptions {
   allowedTools?: string[];
   outputFile?: string;
   verbose?: boolean;
+  quiet?: boolean;
+  display?: PhaseDisplay;
 }
 
 const MODEL_MAP: Record<Model, string> = {
@@ -45,7 +56,7 @@ export const runAgent = async (
   agent: AgentConfig,
   options: AgentOptions
 ): Promise<AgentResult> => {
-  const { workingDir, prompt, systemPrompt, allowedTools, verbose } = options;
+  const { workingDir, prompt, systemPrompt, allowedTools, verbose, quiet, display } = options;
 
   const args: string[] = [
     '--print',
@@ -63,28 +74,36 @@ export const runAgent = async (
   }
 
   const startTime = Date.now();
-  console.log(chalk.dim(`  [${agent.id}] Starting (${agent.model})...`));
+  const focusLabel = agent.focus ? ` (${agent.focus.split(':')[0].trim()})` : '';
+
+  // When using a display, the display handles all status rendering.
+  // When not using a display (solo agent like Robot King), use console.log.
+  if (!display && !quiet) {
+    console.log(chalk.dim(`  [${agent.id}]${focusLabel} Starting (${agent.model})...`));
+  }
 
   return new Promise((resolve) => {
     let output = '';
     let errorOutput = '';
     let lastProgressUpdate = Date.now();
-    const PROGRESS_INTERVAL = 15000; // Update every 15 seconds
+    const PROGRESS_INTERVAL = 15000;
 
     const proc = spawn('claude', args, {
       cwd: workingDir,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    // Progress update interval (always runs so the user knows agents aren't frozen)
-    const progressInterval = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      const now = Date.now();
-      if (now - lastProgressUpdate >= PROGRESS_INTERVAL) {
-        console.log(chalk.dim(`  [${agent.id}] Still working... (${formatElapsed(elapsed)})`));
-        lastProgressUpdate = now;
-      }
-    }, PROGRESS_INTERVAL);
+    // Progress update interval — only for solo agents (display handles its own timing)
+    const progressInterval = !display && !quiet
+      ? setInterval(() => {
+          const elapsed = Date.now() - startTime;
+          const now = Date.now();
+          if (now - lastProgressUpdate >= PROGRESS_INTERVAL) {
+            console.log(chalk.dim(`  [${agent.id}]${focusLabel} Still working... (${formatElapsed(elapsed)})`));
+            lastProgressUpdate = now;
+          }
+        }, PROGRESS_INTERVAL)
+      : null;
 
     // Write prompt to stdin and close it
     proc.stdin.write(prompt);
@@ -94,38 +113,45 @@ export const runAgent = async (
       const text = data.toString();
       output += text;
 
-      if (verbose) {
-        // Stream output with agent prefix
+      if (verbose && !display && !quiet) {
         const lines = text.split('\n');
         lines.forEach((line: string, i: number) => {
-          // Don't print empty trailing line from split
           if (i === lines.length - 1 && line === '') return;
           console.log(chalk.dim(`  [${agent.id}] `) + line);
         });
-        // Reset progress timer so "Still working..." only shows during silence
         lastProgressUpdate = Date.now();
       }
     });
 
     proc.stderr.on('data', (data) => {
       errorOutput += data.toString();
-      if (verbose) {
+      if (verbose && !display && !quiet) {
         console.log(chalk.yellow(`  [${agent.id}] `) + data.toString().trim());
       }
     });
 
     proc.on('close', (code) => {
-      clearInterval(progressInterval);
+      if (progressInterval) clearInterval(progressInterval);
       const elapsed = Date.now() - startTime;
 
       if (code === 0) {
-        console.log(chalk.green(`  [${agent.id}] Completed (${formatElapsed(elapsed)})`));
+        const summary = extractSummary(output);
+        if (display) {
+          display.markDone(agent.id, summary);
+        } else if (!quiet) {
+          const summaryText = summary ? ` — ${summary}` : '';
+          console.log(chalk.green(`  [${agent.id}]${focusLabel} Completed (${formatElapsed(elapsed)})${summaryText}`));
+        }
         resolve({
           success: true,
           output: output.trim(),
         });
       } else {
-        console.log(chalk.red(`  [${agent.id}] Failed (exit code ${code}, ${formatElapsed(elapsed)})`));
+        if (display) {
+          display.markFailed(agent.id, errorOutput || `exit code ${code}`);
+        } else if (!quiet) {
+          console.log(chalk.red(`  [${agent.id}]${focusLabel} Failed (exit code ${code}, ${formatElapsed(elapsed)})`));
+        }
         resolve({
           success: false,
           output: output.trim(),
@@ -135,8 +161,12 @@ export const runAgent = async (
     });
 
     proc.on('error', (err) => {
-      clearInterval(progressInterval);
-      console.log(chalk.red(`  [${agent.id}] Error: ${err.message}`));
+      if (progressInterval) clearInterval(progressInterval);
+      if (display) {
+        display.markFailed(agent.id, err.message);
+      } else if (!quiet) {
+        console.log(chalk.red(`  [${agent.id}] Error: ${err.message}`));
+      }
       resolve({
         success: false,
         output: '',
@@ -146,27 +176,55 @@ export const runAgent = async (
   });
 };
 
+export interface ParallelOptions {
+  verbose?: boolean;
+  phaseName?: string;
+  phaseIcon?: string;
+}
+
 export const runAgentsInParallel = async (
   agents: AgentConfig[],
   optionsPerAgent: AgentOptions[],
-  verbose?: boolean
+  parallelOpts: ParallelOptions = {}
 ): Promise<AgentResult[]> => {
   if (agents.length !== optionsPerAgent.length) {
     throw new Error('Agents and options arrays must have the same length');
   }
 
-  // Pass verbose to each agent's options
-  const optionsWithVerbose = optionsPerAgent.map((opt) => ({
+  const { verbose, phaseName, phaseIcon } = parallelOpts;
+
+  // Create a display if we have a phase name (otherwise fall back to plain logging)
+  const display = phaseName
+    ? new PhaseDisplay(phaseName, phaseIcon ?? '>', verbose)
+    : null;
+
+  if (display) {
+    // Register all agents before starting
+    for (const agent of agents) {
+      const focus = agent.focus ?? agent.role;
+      display.registerAgent(agent.id, focus, agent.model);
+    }
+    display.start();
+  }
+
+  const optionsWithContext = optionsPerAgent.map((opt) => ({
     ...opt,
     verbose: verbose ?? opt.verbose,
+    display: display ?? undefined,
   }));
 
-  const promises = agents.map((agent, i) => runAgent(agent, optionsWithVerbose[i]));
-  return Promise.all(promises);
+  const promises = agents.map((agent, i) => runAgent(agent, optionsWithContext[i]));
+  const results = await Promise.all(promises);
+
+  if (display) {
+    display.stop();
+  }
+
+  return results;
 };
 
 export const buildSurferPrompt = (description: string, focus: string): string => {
-  return `You are a Surfer agent in the robot-consortium system. Your job is to explore the codebase and find relevant information.
+  return `You are a Surfer agent in the robot-consortium system. Your job is to explore the codebase and extract CONCRETE CODE PATTERNS — not prose summaries.
 
 TASK DESCRIPTION:
 ${description}
@@ -175,17 +233,34 @@ YOUR FOCUS AREA: ${focus}
 
 INSTRUCTIONS:
 1. Search the codebase thoroughly for information relevant to your focus area
-2. Look for existing patterns, similar implementations, relevant tests
-3. Document your findings clearly
+2. Find ACTUAL CODE that demonstrates patterns, conventions, and implementations
+3. For every pattern you find, include the EXACT code snippet with file path and line numbers
+4. Identify how existing code handles: error cases, imports, exports, naming, structure
+
+CRITICAL: You must output STRUCTURED findings, not prose descriptions.
 
 OUTPUT FORMAT:
-Write a markdown report with:
-- What you found
-- Relevant file paths with line numbers
-- Code patterns observed
-- Recommendations based on findings
+Use this exact structure for each finding:
 
-Be thorough but concise. Focus only on your assigned area.`;
+### Pattern: [descriptive name]
+**File**: \`path/to/file.ts\` (lines X-Y)
+**Purpose**: [1-line description of what this pattern does]
+\`\`\`typescript
+// paste the actual code here, verbatim
+\`\`\`
+**Relevance**: [1 line explaining why this matters for the task]
+
+---
+
+RULES:
+- Every finding MUST include a code block with the actual source code
+- Every code block MUST have a file path and line number range
+- Do NOT write prose paragraphs — if you can't show code, skip the finding
+- Focus on patterns that the implementation should follow or reuse
+- Include at least 3 concrete code examples per focus area
+- If you find test patterns, include the test code too
+
+Be thorough but structured. Each finding must be copy-pasteable as a reference.`;
 };
 
 export const buildSurferAnalysisPrompt = (description: string): string => {
@@ -198,12 +273,15 @@ INSTRUCTIONS:
 1. Analyze the task to understand what areas of the codebase need exploration
 2. Determine what exploration focuses would be most valuable
 3. Consider areas like: existing patterns, similar features, test infrastructure, dependencies, error handling, API boundaries, configuration, security patterns, database/data layer, etc.
-4. Choose 2-5 exploration focuses based on the task needs
+4. Choose 2-4 exploration focuses based on the task needs
+
+IMPORTANT: A "project-conventions" surfer is ALWAYS added automatically to read CLAUDE.md, .claude/commands/, and config files.
+Do NOT include it in your list. Your focuses are IN ADDITION to the mandatory conventions surfer.
 
 GUIDELINES:
-- Simple tasks (UI tweak, small fix): 2 surfers
-- Medium tasks (new feature, refactor): 3 surfers
-- Complex tasks (cross-cutting, architectural): 4-5 surfers
+- Simple tasks (UI tweak, small fix): 2 surfers (+ conventions = 3 total)
+- Medium tasks (new feature, refactor): 3 surfers (+ conventions = 4 total)
+- Complex tasks (cross-cutting, architectural): 4 surfers (+ conventions = 5 total)
 - Each focus should explore a DISTINCT area relevant to THIS task
 - Don't include focuses that aren't relevant to the task
 
@@ -211,76 +289,318 @@ OUTPUT FORMAT (use exactly this format):
 SURFER_FOCUSES:
 1. [kebab-case-name]: [one-line description of what to explore]
 2. [kebab-case-name]: [one-line description]
-... (up to 5 max)
+... (up to 4 max, since conventions is automatic)
 END_FOCUSES
 
 Example for "Add user authentication":
 SURFER_FOCUSES:
 1. existing-auth-patterns: Look for any existing authentication or session handling code
 2. api-endpoints: Explore how API routes are structured and protected
-3. user-data-model: Find user-related database models and schemas
-4. security-patterns: Identify input validation, sanitization, and security practices
+3. test-patterns: Find how tests are structured and what test utilities exist
 END_FOCUSES
 
 Choose focuses that will help planners understand what exists and how to implement THIS specific task.`;
 };
 
+export const buildConventionsSurferPrompt = (description: string): string => {
+  return `You are a Surfer agent responsible for extracting PROJECT CONVENTIONS. This is a mandatory exploration that runs for every task.
+
+TASK DESCRIPTION:
+${description}
+
+YOUR JOB: Find and extract all project-level conventions, rules, and configuration that implementation agents must follow.
+
+FILES TO CHECK (read ALL that exist):
+1. CLAUDE.md (project root)
+2. .claude/CLAUDE.md
+3. .claude/commands/*.md (all command files — list them first with Glob)
+4. ~/.claude/CLAUDE.md (user-level, if accessible)
+5. ~/.claude/commands/*.md (user-level commands)
+6. .editorconfig, .prettierrc, .eslintrc, tsconfig.json (style configs)
+7. package.json (scripts section, dependencies)
+
+INSTRUCTIONS:
+1. Read each file listed above (skip if it doesn't exist)
+2. Extract ALL rules, conventions, and instructions that affect how code should be written
+3. Pay special attention to:
+   - Testing commands and patterns (how to run tests, what framework)
+   - Linting commands and rules
+   - Code style preferences (arrow functions, naming conventions, etc.)
+   - Build and compilation commands
+   - Git workflow rules
+   - Any explicit "do" and "don't" instructions
+   - Language-specific preferences
+
+OUTPUT FORMAT:
+# Project Conventions
+
+## Testing
+[How to run tests, test frameworks used, test file naming, test patterns]
+
+## Linting & Formatting
+[Lint commands, formatters, auto-fix commands]
+
+## Code Style
+[Language preferences, naming conventions, import style, etc.]
+
+## Build & Compilation
+[Build commands, compilation requirements]
+
+## Git Workflow
+[Branch naming, commit style, PR conventions]
+
+## Project-Specific Rules
+[Any other rules from CLAUDE.md or project config]
+
+## Slash Commands / Skills
+[List any .claude/commands/ files found and summarize what each does]
+
+For each section, include the EXACT commands or rules found. Quote directly from the source files.
+If a section has no findings, write "No conventions found for this area."`;
+};
+
 export const buildCityPlannerPrompt = (
   description: string,
   findings: string,
-  perspective: string
+  perspective: string,
+  conventions?: string,
+  codePatterns?: string
 ): string => {
+  const conventionsSection = conventions
+    ? `\n\nPROJECT CONVENTIONS (MUST FOLLOW):\n${conventions}`
+    : '';
+
+  const patternsSection = codePatterns
+    ? `\n\nCODE PATTERNS FROM CODEBASE (reference these in your plan):\n${codePatterns}`
+    : '';
+
   return `You are a City Planner agent in the robot-consortium system. Your job is to propose an implementation approach.
 
 TASK DESCRIPTION:
 ${description}
 
 FINDINGS FROM EXPLORATION:
-${findings}
+${findings}${conventionsSection}${patternsSection}
 
 YOUR PERSPECTIVE: ${perspective}
 
 INSTRUCTIONS:
-1. Analyze the findings
-2. Propose a concrete implementation plan
-3. Consider tradeoffs and risks
-4. Be specific about files to modify/create
+1. Analyze the findings and project conventions
+2. Propose a concrete implementation plan that FOLLOWS existing patterns
+3. For each change, reference the SPECIFIC existing pattern to follow (e.g. "implement using the pattern from src/foo.ts lines 23-45")
+4. Explicitly separate test tasks from implementation tasks
+5. Consider tradeoffs and risks
 
 OUTPUT FORMAT:
 Write a markdown plan with:
 - Summary of approach
-- Step-by-step implementation tasks
-- Files to modify (with specific changes)
+- **Test tasks** (tests to write FIRST, before implementation)
+  - Each test task should reference existing test patterns from the findings
+- **Implementation tasks** (code to write that makes tests pass)
+  - Each task should reference specific existing code patterns to follow
+- Files to modify (with specific changes and pattern references)
 - Files to create
-- Testing strategy
 - Risks and mitigations
 
+CRITICAL RULES:
+- Every task MUST reference at least one specific file/pattern from the findings
+- Do NOT write vague instructions like "add tests" — specify WHICH test patterns to follow
+- Do NOT write "follow existing patterns" without naming the specific pattern and file
+- Test tasks come BEFORE implementation tasks
+
 Think from your assigned perspective (${perspective}) but be practical.`;
+};
+
+export const buildRatPrompt = (
+  description: string,
+  findings: string,
+  plans: string,
+  focus: string
+): string => {
+  return `You are a Rat agent in the robot-consortium system. Your job is to find weaknesses, flaws, and gaps in the proposed implementation plans.
+
+TASK DESCRIPTION:
+${description}
+
+EXPLORATION FINDINGS:
+${findings}
+
+PROPOSED PLANS:
+${plans}
+
+YOUR CRITIQUE FOCUS: ${focus}
+
+INSTRUCTIONS:
+1. Read ALL proposed plans carefully
+2. Attack them from your assigned focus angle
+3. Reference the actual codebase to back up your critiques — don't just speculate
+4. Be specific: cite file paths, line numbers, and concrete scenarios
+5. Distinguish between critical flaws (must fix) and minor concerns (nice to fix)
+6. Check if the plans reference SPECIFIC existing code patterns with file paths and line numbers
+   - If a plan says "follow existing patterns" without naming the file and lines, flag it as VAGUE
+   - If a plan doesn't distinguish test tasks from implementation tasks, flag it as INCOMPLETE
+
+OUTPUT FORMAT:
+Write a markdown critique with:
+- Critical flaws found (things that will break or cause serious issues)
+- Vagueness issues (tasks that don't reference specific files or patterns)
+- Concerns (things that could be problematic)
+- Missing considerations (gaps nobody addressed)
+- For each issue: which plan(s) it affects and why it matters
+
+Be adversarial but constructive. Your job is to make the final plan better by finding what the planners missed.`;
+};
+
+export const buildRatAnalysisPrompt = (
+  description: string,
+  plans: string
+): string => {
+  return `You are the Robot King. The City Planners have proposed implementation plans. Determine what critique angles are needed to stress-test these plans.
+
+TASK DESCRIPTION:
+${description}
+
+PROPOSED PLANS:
+${plans}
+
+INSTRUCTIONS:
+1. Read the plans and identify their assumptions, risks, and potential blind spots
+2. Determine 2-3 critique angles that would most effectively challenge these plans
+3. Each angle should target a DIFFERENT type of weakness
+
+COMMON ANGLES (choose what's relevant):
+- technical-flaws: Race conditions, edge cases, breaking changes, backwards compatibility
+- overengineering: Unnecessary complexity, scope creep, premature abstractions
+- missing-requirements: Gaps in coverage, untested paths, security holes
+- data-integrity: Migration safety, data loss risks, consistency issues
+- performance: Scalability concerns, N+1 queries, memory issues
+
+OUTPUT FORMAT (use exactly this format):
+RAT_FOCUSES:
+1. [kebab-case-name]: [one-line description of what to attack]
+2. [kebab-case-name]: [one-line description]
+3. [kebab-case-name]: [one-line description]
+END_RAT_FOCUSES
+
+Choose 2-3 focuses that will most effectively challenge THIS specific set of plans.`;
 };
 
 export const buildDawgPrompt = (
   description: string,
   plan: string,
-  taskDescription: string
+  taskDescription: string,
+  conventions?: string,
+  codePatterns?: string,
+  testFiles?: string
 ): string => {
+  const conventionsSection = conventions
+    ? `\n\nPROJECT CONVENTIONS (MUST FOLLOW):\n${conventions}`
+    : '';
+
+  const patternsSection = codePatterns
+    ? `\n\nCODE PATTERNS TO FOLLOW:\n${codePatterns}`
+    : '';
+
+  const testFilesSection = testFiles
+    ? `\n\nTESTS YOU MUST MAKE PASS:\nThe following tests have been written for your task. Your implementation must make these tests pass.\n\n${testFiles}`
+    : '';
+
   return `You are a Dawg agent in the robot-consortium system. Your job is to implement code changes.
 
 OVERALL TASK:
 ${description}
 
 APPROVED PLAN:
-${plan}
+${plan}${conventionsSection}${patternsSection}
 
 YOUR SPECIFIC TASK:
-${taskDescription}
+${taskDescription}${testFilesSection}
 
 INSTRUCTIONS:
 1. Implement the changes described in your task
-2. Follow existing code patterns in the codebase
-3. Write clean, maintainable code
-4. Add appropriate tests if specified in the plan
+2. Follow the project conventions listed above EXACTLY
+3. Reuse existing patterns from the codebase — the code patterns section shows you what to follow
+4. Write clean, maintainable code that matches the existing style
+${testFiles ? '5. Run the tests listed above and ensure they pass\n6. If a test fails, fix your implementation (not the test) unless the test has an obvious bug' : '5. Add appropriate tests if specified in the plan'}
 
 Do the implementation now. Write the code.`;
+};
+
+export const buildTestDawgPrompt = (
+  description: string,
+  plan: string,
+  taskDescription: string,
+  conventions?: string,
+  codePatterns?: string
+): string => {
+  const conventionsSection = conventions
+    ? `\n\nPROJECT CONVENTIONS (MUST FOLLOW):\n${conventions}`
+    : '';
+
+  const patternsSection = codePatterns
+    ? `\n\nEXISTING TEST PATTERNS TO FOLLOW:\n${codePatterns}`
+    : '';
+
+  return `You are a Test Dawg agent in the robot-consortium system. Your job is to write TESTS FIRST, before implementation.
+
+OVERALL TASK:
+${description}
+
+APPROVED PLAN:
+${plan}${conventionsSection}${patternsSection}
+
+YOUR SPECIFIC TASK (write tests for this):
+${taskDescription}
+
+INSTRUCTIONS:
+1. Write tests that define the expected behavior for this task
+2. Follow the existing test patterns shown in the code patterns above
+3. Use the testing framework and conventions from the project conventions
+4. Cover: happy path, edge cases, error cases
+5. Tests should be specific enough that a separate implementation agent can write code to pass them
+6. Do NOT write the implementation — only tests
+
+TEST QUALITY CHECKLIST:
+- Tests use the same framework/runner as existing tests in the project
+- Test file naming matches the project convention
+- Tests import from the correct paths (match existing import patterns)
+- Tests cover the interface/behavior described in the task, not implementation details
+- Each test has a clear, descriptive name
+
+Write the tests now. The implementation will be done by a separate agent after you.`;
+};
+
+export const buildTaskVerificationPrompt = (
+  taskDescription: string,
+  testResults: string,
+  testFiles?: string
+): string => {
+  return `You are a verification Pig agent. A Dawg just finished implementing a task. Check if it works.
+
+TASK THAT WAS IMPLEMENTED:
+${taskDescription}
+
+TEST RESULTS:
+${testResults}
+
+${testFiles ? `RELEVANT TEST FILES:\n${testFiles}` : ''}
+
+INSTRUCTIONS:
+1. Analyze the test results
+2. Determine if the implementation is working correctly
+3. If tests are failing, identify exactly which tests fail and why
+
+OUTPUT FORMAT:
+VERDICT: PASS or FAIL
+
+If FAIL:
+## Failed Tests
+[List each failing test with the error message]
+
+## Likely Fix
+[Brief description of what the implementation dawg should fix]
+
+Be concise and specific. This output will be fed back to the implementation agent for a fix attempt.`;
 };
 
 export const buildPigPrompt = (
@@ -300,9 +620,10 @@ YOUR CHECK TYPE: ${checkType}
 
 INSTRUCTIONS:
 ${checkType === 'tests' ? `
-- Run the test suite
-- Check for test failures
-- Verify new tests were added if required
+- Run the FULL test suite (not just new tests) as an integration check
+- Per-task verification already ran individual tests — this is for catching cross-cutting regressions
+- Check for test failures across the entire project
+- Report any failures, even in pre-existing tests that may have been broken
 ` : checkType === 'code-review' ? `
 - Review the code changes
 - Check for bugs, security issues, code smells

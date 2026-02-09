@@ -2,9 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
-import { loadState, updatePhase, addPlan, setFinalPlan, getStateDir, setPlannerPerspectives } from '../state.js';
-import { createAgentConfig, runAgentsInParallel, runAgent, buildCityPlannerPrompt, buildPlannerAnalysisPrompt } from '../agents.js';
-import { getSurfFindings } from './surf.js';
+import { loadState, updatePhase, addPlan, addCritique, setFinalPlan, getStateDir, setPlannerPerspectives, setRatFocuses } from '../state.js';
+import { createAgentConfig, runAgentsInParallel, runAgent, buildCityPlannerPrompt, buildPlannerAnalysisPrompt, buildRatPrompt, buildRatAnalysisPrompt } from '../agents.js';
+import { getSurfFindings, getSurfConventions, getSurfCodePatterns } from './surf.js';
 
 const DEFAULT_PERSPECTIVES = [
   'conservative - minimize risk, prefer incremental changes, prioritize stability',
@@ -22,8 +22,10 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
 
   updatePhase(workingDir, 'PLAN');
 
-  // Get findings from surf phase
+  // Get findings, conventions, and code patterns from surf phase
   const findings = getSurfFindings(workingDir);
+  const conventions = getSurfConventions(workingDir);
+  const codePatterns = getSurfCodePatterns(workingDir);
 
   // Have Robot King analyze findings and determine planner perspectives
   console.log(chalk.dim('  Robot King analyzing findings to determine planner perspectives...\n'));
@@ -48,12 +50,16 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
   // Build prompts for each planner
   const options = planners.map((planner) => ({
     workingDir,
-    prompt: buildCityPlannerPrompt(state.description, findings, planner.focus!),
+    prompt: buildCityPlannerPrompt(state.description, findings, planner.focus!, conventions, codePatterns),
     allowedTools: ['Read', 'Glob', 'Grep'],
   }));
 
   // Run planners in parallel
-  const results = await runAgentsInParallel(planners, options, phaseOptions.verbose);
+  const results = await runAgentsInParallel(planners, options, {
+    verbose: phaseOptions.verbose,
+    phaseName: `PLANNERS [${perspectives.length} agents]`,
+    phaseIcon: '📋',
+  });
 
   // Process results
   const failedPlanners: string[] = [];
@@ -86,11 +92,26 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
     return { success: false };
   }
 
-  // Have Robot King synthesize the plans
+  // --- RAT PHASE: Challenge the plans ---
+  const allPlans = getPlans(workingDir);
+  let critiquesText = '';
+
+  if (phaseOptions.skipRats) {
+    console.log(chalk.yellow('\n  ⏭️  Skipping Rat phase (--skip-rats)'));
+  } else {
+    const ratResult = await runRatPhase(workingDir, state.description, findings, allPlans, phaseOptions.verbose);
+    if (ratResult.success && ratResult.critiques) {
+      critiquesText = ratResult.critiques;
+    } else if (!ratResult.critiques) {
+      console.log(chalk.yellow('\n  ⚠ All rat critiques failed — synthesizing without adversarial review'));
+    }
+    // Rat failures are non-fatal — we proceed with synthesis regardless
+  }
+
+  // Have Robot King synthesize the plans (with critiques if available)
   console.log(chalk.dim('\n  Robot King synthesizing final plan...'));
 
-  const allPlans = getPlans(workingDir);
-  const synthesisResult = await synthesizePlans(workingDir, state.description, allPlans, perspectives.length, phaseOptions.verbose);
+  const synthesisResult = await synthesizePlans(workingDir, state.description, allPlans, perspectives.length, critiquesText, conventions, phaseOptions.verbose);
 
   if (!synthesisResult.success) {
     console.log(chalk.red('  ✗ Failed to synthesize plans'));
@@ -102,6 +123,9 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
 
   const stateDir = getStateDir(workingDir);
   console.log(chalk.dim(`\n  Plans written to: ${stateDir}/plans/`));
+  if (critiquesText) {
+    console.log(chalk.dim(`  Critiques written to: ${stateDir}/critiques/`));
+  }
   console.log(chalk.dim(`  Final plan: ${stateDir}/final-plan.md`));
 
   return { success: true, questions: questions.length > 0 ? questions : undefined };
@@ -169,23 +193,181 @@ const parsePerspectives = (output: string): string[] => {
   return perspectives;
 };
 
+const DEFAULT_RAT_FOCUSES = [
+  'technical-flaws: Find edge cases, race conditions, breaking changes, and backwards compatibility issues',
+  'overengineering: Identify unnecessary complexity, scope creep, and premature abstractions',
+  'missing-requirements: Find gaps in coverage, untested paths, and security holes',
+];
+
+const runRatPhase = async (
+  workingDir: string,
+  description: string,
+  findings: string,
+  plans: string,
+  verbose?: boolean
+): Promise<{ success: boolean; critiques: string }> => {
+  console.log(chalk.cyan('\n  🐀 RAT PHASE: Challenging the plans'));
+
+  // Have Robot King determine rat focuses
+  console.log(chalk.dim('  Robot King determining critique angles...\n'));
+  const focuses = await analyzeRatNeeds(workingDir, description, plans, verbose);
+
+  setRatFocuses(workingDir, focuses);
+
+  console.log(chalk.green(`  ✓ Robot King determined ${focuses.length} rat(s) needed:`));
+  focuses.forEach((f) => {
+    const [name, desc] = f.split(':').map((s) => s.trim());
+    console.log(chalk.dim(`    - ${name}: ${desc || 'no description'}`));
+  });
+
+  console.log(chalk.dim(`\n  Deploying ${focuses.length} Rat(s)...\n`));
+
+  // Create rat agents
+  const rats = focuses.map((focus, i) => createAgentConfig('rat', i + 1, focus));
+
+  // Build prompts
+  const options = rats.map((rat) => ({
+    workingDir,
+    prompt: buildRatPrompt(description, findings, plans, rat.focus!),
+    allowedTools: ['Read', 'Glob', 'Grep'],
+  }));
+
+  // Run rats in parallel
+  const results = await runAgentsInParallel(rats, options, {
+    verbose,
+    phaseName: `RATS [${focuses.length} agents]`,
+    phaseIcon: '🐀',
+  });
+
+  // Process results
+  let allCritiques = '';
+  const failedRats: string[] = [];
+
+  results.forEach((result, i) => {
+    const rat = rats[i];
+    const focusName = focuses[i].split(':')[0].trim();
+
+    if (result.success) {
+      const filename = `${rat.id}-${focusName}.md`;
+      addCritique(workingDir, filename, result.output);
+      allCritiques += `## ${rat.id} (${focusName})\n\n${result.output}\n\n---\n\n`;
+      console.log(chalk.green(`  ✓ ${rat.id} (${focusName}) critique saved`));
+    } else {
+      failedRats.push(rat.id);
+      console.log(chalk.red(`  ✗ ${rat.id} failed: ${result.error}`));
+    }
+  });
+
+  if (failedRats.length > 0) {
+    console.log(chalk.yellow(`\n  ⚠ ${failedRats.length} rat(s) failed, proceeding with available critiques`));
+  }
+
+  return { success: true, critiques: allCritiques };
+};
+
+const analyzeRatNeeds = async (
+  workingDir: string,
+  description: string,
+  plans: string,
+  verbose?: boolean
+): Promise<string[]> => {
+  const robotKing = createAgentConfig('robot-king', 0);
+
+  const result = await runAgent(robotKing, {
+    workingDir,
+    prompt: buildRatAnalysisPrompt(description, plans),
+    allowedTools: ['Read'],
+    verbose,
+  });
+
+  if (!result.success) {
+    console.log(chalk.yellow('  ⚠ Robot King analysis failed, using default rat focuses'));
+    return DEFAULT_RAT_FOCUSES;
+  }
+
+  const focuses = parseRatFocuses(result.output);
+
+  if (focuses.length === 0) {
+    console.log(chalk.yellow('  ⚠ Could not parse rat focuses, using defaults'));
+    return DEFAULT_RAT_FOCUSES;
+  }
+
+  return focuses;
+};
+
+const parseRatFocuses = (output: string): string[] => {
+  const focuses: string[] = [];
+
+  const match = output.match(/RAT_FOCUSES:\s*([\s\S]*?)END_RAT_FOCUSES/);
+  if (!match) {
+    return [];
+  }
+
+  const block = match[1];
+  const lines = block.split('\n');
+
+  for (const line of lines) {
+    const lineMatch = line.match(/^\d+\.\s*(.+)$/);
+    if (lineMatch) {
+      const focus = lineMatch[1].trim();
+      if (focus) {
+        focuses.push(focus);
+      }
+    }
+  }
+
+  // Enforce limits: 2-3 rats
+  if (focuses.length > 3) {
+    return focuses.slice(0, 3);
+  }
+  if (focuses.length < 2) {
+    return DEFAULT_RAT_FOCUSES;
+  }
+
+  return focuses;
+};
+
 const synthesizePlans = async (
   workingDir: string,
   description: string,
   plans: string,
   plannerCount: number,
+  critiques: string,
+  conventions: string,
   verbose?: boolean
 ) => {
   const robotKing = createAgentConfig('robot-king', 0);
+
+  const critiquesSection = critiques
+    ? `
+
+RAT CRITIQUES:
+The following critiques were raised against the proposed plans by adversarial Rat agents. Address the valid critiques in your final plan and note which ones you addressed and which you dismissed (with reasoning).
+
+${critiques}`
+    : '';
+
+  const conventionsSection = conventions
+    ? `
+
+PROJECT CONVENTIONS (the final plan MUST respect these):
+${conventions}`
+    : '';
 
   const prompt = `You are the Robot King. ${plannerCount} City Planner(s) have proposed implementation approaches for this task:
 
 TASK: ${description}
 
 PROPOSED PLANS:
-${plans}
+${plans}${critiquesSection}${conventionsSection}
 
 Your job: Synthesize these into ONE final implementation plan. Take the best ideas from each.
+
+CRITICAL REQUIREMENTS:
+1. Every task MUST reference specific files and patterns from the findings (no vague "follow patterns")
+2. Tasks MUST be split into two stages: TESTS FIRST, then IMPLEMENTATION
+3. Each implementation task must specify which test task(s) it needs to make pass
+4. If conventions exist, the plan must explicitly follow them (test commands, lint rules, naming, etc.)
 
 OUTPUT FORMAT:
 # Final Implementation Plan
@@ -193,22 +375,38 @@ OUTPUT FORMAT:
 ## Summary
 [Brief overview of the chosen approach]
 
-## Tasks
-[Numbered list of specific implementation tasks, in order]
+## Stage 1: Test Tasks
+[Numbered list of test-writing tasks — these run FIRST]
+Each task format:
+- T1. [description]
+  - Test file: [path to test file to create/modify]
+  - Pattern to follow: [specific existing test file + lines to use as reference]
+  - Covers: [what behavior this tests]
+
+## Stage 2: Implementation Tasks
+[Numbered list of implementation tasks — these run AFTER tests are written]
+Each task format:
+- I1. [description]
+  - Makes pass: T1, T2 (reference which test tasks)
+  - Files to modify: [specific files]
+  - Pattern to follow: [specific existing code file + lines to use as reference]
 
 ## Files to Modify
 [List each file with what changes are needed]
 
 ## Files to Create
 [List any new files needed]
+${critiques ? `
+## Critiques Addressed
+[List each valid critique and how the plan addresses it]
 
-## Testing Requirements
-[What tests need to be added/modified]
-
+## Critiques Dismissed
+[List any dismissed critiques with reasoning]
+` : ''}
 ## Notes
 [Any important considerations]
 
-Be specific and actionable. This plan will be handed to implementation agents.`;
+Be specific and actionable. Implementation agents will receive test files from Stage 1 and must make them pass in Stage 2.`;
 
   return runAgent(robotKing, {
     workingDir,

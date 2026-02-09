@@ -1,6 +1,25 @@
 # Robot Consortium
 
-Multi-agent orchestration CLI for Claude Code. Gastown without the bullshit.
+Multi-agent orchestration CLI for Claude Code.
+
+You give it a task. It spins up a team of AI agents that explore your codebase, plan an approach, challenge the plan for flaws, write tests, implement the code, verify everything works, and open a PR — all automatically.
+
+```
+You: "Add rate limiting to the API"
+
+  Surfers explore your codebase to understand what exists
+  Planners propose how to build it from different angles
+  Rats poke holes in the plans and find what'll break
+  Robot King merges the best ideas into one battle-tested plan
+  You review and approve the plan
+  Test Dawgs write tests defining expected behavior
+  Impl Dawgs write code to pass those tests
+  Each task is verified immediately — failures get retried
+  Pigs run a final sweep (lint, full test suite, code review)
+  PR gets opened with a clean description
+
+You: review the PR
+```
 
 ## Installation
 
@@ -9,6 +28,8 @@ npm install
 npm run build
 npm link
 ```
+
+Requires [Claude Code](https://claude.ai/code) and the `gh` CLI for GitHub integration.
 
 ## Usage
 
@@ -25,11 +46,24 @@ rc start --issue 123
 # Start from a GitHub issue (any repo)
 rc start --issue https://github.com/owner/repo/issues/456
 
+# Custom branch name
+rc start "Fix login bug" --branch fix/login-bug
+
+# Use current branch (skip branch creation)
+rc start "Fix login bug" --no-branch
+
+# Auto-proceed through checkpoints
+rc start "Add feature" --yes
+
+# Verbose mode (stream agent output)
+rc start "Debug issue" --verbose
+
 # Check status
 rc status
 
-# Resume a paused task
+# Resume a paused task (with optional flags)
 rc resume
+rc resume --skip-oink --verbose
 
 # Abort and clean up
 rc abort
@@ -37,73 +71,149 @@ rc abort
 
 Shorthand: `rc` works the same as `robot-consortium`.
 
-### Task Input Options
+### Options
 
 | Option | Description |
 |--------|-------------|
 | `"description"` | Inline task description |
-| `--file <path>` | Read from markdown file |
-| `--issue <ref>` | Fetch from GitHub issue (requires `gh` CLI) |
+| `--file <path>` | Read task from a markdown file |
+| `--issue <ref>` | Fetch task from a GitHub issue (requires `gh` CLI) |
+| `--branch <name>` | Custom git branch name |
+| `--no-branch` | Skip branch creation, use current branch |
+| `--yes` | Auto-proceed through all checkpoints |
+| `--verbose` | Stream agent output in real-time |
+| `--skip-oink` | Skip verification phase (lint, tests, code review) |
+| `--skip-ci` | Skip CI monitoring and auto-fix phase |
+| `--skip-rats` | Skip adversarial plan critique phase |
 
-For `--issue`, you can provide:
-- Just the number: `--issue 123` (uses current repo)
-- Full URL: `--issue https://github.com/owner/repo/issues/123`
+For `--issue`, you can provide just the number (`--issue 123`) or a full URL (`--issue https://github.com/owner/repo/issues/123`). Issue content includes title, body, labels, and comments.
 
-Issue content includes title, body, labels, and comments.
+### Skip Flags
+
+Skip flags let you control which phases run. Useful during development or when you want faster iteration.
+
+**`--skip-rats`** — Skips the adversarial critique step during planning. Planners still propose approaches and Robot King still synthesizes a final plan, but no one challenges it for flaws first. Use this for simple, low-risk tasks where the extra scrutiny isn't worth the time.
+
+**`--skip-oink`** — Skips the final verification sweep (lint, full test suite, code review, spec compliance). Per-task verification during BUILD still runs, so individual tasks are still tested — you're just skipping the integration-level check. Use this when you want to review the code yourself before running the full suite.
+
+**`--skip-ci`** — Skips the CI monitoring and auto-fix loop after the PR is created. The PR still gets opened, but the system won't wait for CI to pass or attempt fixes. Use this when you'll handle CI failures yourself.
+
+All skip flags work on both `start` and `resume`:
+
+```bash
+# Fast iteration: skip verification and CI, auto-proceed
+rc start "Quick fix" --skip-oink --skip-ci --yes
+
+# Resume and skip CI this time
+rc resume --skip-ci
+```
 
 ## How It Works
 
+The pipeline runs six phases in sequence. Each phase uses specialized agents working in parallel where possible.
+
 ```
-User → Robot King → SURF → PLAN → BUILD → OINK → Done
-                      ↓       ↓       ↓
-                   Surfers  City    Dawgs   Pigs
-                   (3x)    Planners (Nx)   (3x)
-                           (3x)
+SURF ──▶ PLAN ──▶ BUILD ──▶ OINK ──▶ PR ──▶ CI_CHECK ──▶ DONE
+              │              │                    │
+              │ --skip-rats  │ --skip-oink        │ --skip-ci
+              │ skips rats   │ skips to PR         │ skips to DONE
+              │ within PLAN  │                     │
 ```
 
-### Phases
+### Phase 1: SURF — Explore the codebase
 
-1. **SURF** - 3 Surfers explore the codebase in parallel
-   - Focus areas: patterns, similar features, tests
-   - Output: `findings/*.md`
+Robot King analyzes the task and decides what to explore (2-5 focus areas like "api-patterns", "test-infrastructure", "similar-features"). A mandatory conventions surfer always runs first — it reads CLAUDE.md, `.claude/commands/`, config files (tsconfig, eslint, prettier, package.json) to extract project rules that all downstream agents must follow.
 
-2. **PLAN** - 3 City Planners propose approaches (Opus)
-   - Perspectives: conservative, ambitious, minimal
-   - Robot King synthesizes into final plan
-   - Output: `plans/*.md`, `final-plan.md`
+Surfers explore in parallel and produce structured findings: actual code blocks with file paths and line numbers, not prose summaries. This gives planners and implementers concrete patterns to reference.
 
-3. **BUILD** - Dawgs implement the code (Opus)
-   - Parallel execution for independent tasks
-   - Sequential for dependent tasks
-   - Output: actual code changes
+**Output:** `findings/*.md` — one per surfer
+**Checkpoint:** You review findings before planning begins.
 
-4. **OINK** - 3 Pigs verify the implementation
-   - Checks: tests, code review, spec compliance
-   - Pass → Done
-   - Fail → Back to BUILD with feedback
+### Phase 2: PLAN — Propose and challenge approaches
+
+Robot King determines 1-5 planner perspectives based on the findings (e.g., "api-design", "testing-strategy", "migration-safety"). City Planners work in parallel, each proposing an approach from their angle. Every plan must reference specific existing code patterns and separate work into test tasks and implementation tasks.
+
+Then the Rats attack. Robot King assigns 2-3 adversarial focuses (e.g., "technical-flaws", "overengineering", "missing-requirements") and Rats critique every plan — looking for edge cases, scope creep, vagueness, and gaps. Plans that say "follow existing patterns" without naming the specific file and lines get flagged.
+
+Robot King synthesizes all plans and critiques into one final plan that addresses the valid concerns.
+
+**Output:** `plans/*.md`, `critiques/*.md`, `final-plan.md`
+**Checkpoint:** You review the final plan before implementation begins.
+**Skippable:** `--skip-rats` skips the critique step. Plans still get synthesized.
+
+### Phase 3: BUILD — Write tests, then implement
+
+The plan gets broken into test tasks and implementation tasks.
+
+**Stage 1: Tests first.** Test Dawgs write test suites defining expected behavior, edge cases, and error paths. They follow the testing patterns found during SURF. Tests run in parallel.
+
+**Stage 2: Implementation.** Impl Dawgs write code to make the tests pass. They receive the project conventions, code patterns from SURF, and the test files from Stage 1. Independent tasks run in parallel with a live progress display showing each task's status (implementing → verifying → done). Dependent tasks run sequentially.
+
+**Per-task verification:** After each implementation task finishes, a verification agent runs the relevant tests. If tests fail, the feedback is sent back to the implementer for a retry (up to 2 attempts). This catches issues immediately instead of waiting for the final sweep.
+
+**Output:** Code changes written directly to the repo.
+
+### Phase 4: OINK — Final verification sweep
+
+Since per-task checks already ran during BUILD, OINK is a safety net for integration-level issues.
+
+A lint pig runs first and auto-fixes formatting issues. Then three verification pigs run in parallel:
+- **Tests pig** — runs the full test suite (catches cross-cutting regressions)
+- **Code review pig** — reviews the changes for bugs, security issues, code smells
+- **Spec compliance pig** — checks that the implementation matches the plan
+
+If everything passes, the pipeline moves to PR. If anything fails, the feedback goes back to BUILD for another attempt.
+
+**Output:** `reviews/*.md`
+**Skippable:** `--skip-oink` skips straight to PR.
+
+### Phase 5: PR — Open a pull request
+
+Commits any uncommitted changes, pushes the branch, and creates a PR via `gh`. Robot King generates the PR title and description from the diff, commits, and plan.
+
+**Output:** A GitHub pull request.
+
+### Phase 6: CI_CHECK — Monitor and fix CI
+
+Waits for CI checks to complete (up to 15 minutes). If CI passes, done. If CI fails, Robot King analyzes the failure logs, pushes a fix, and waits again — up to 3 fix attempts.
+
+**Skippable:** `--skip-ci` (or `--skip-oink`) skips straight to DONE.
 
 ### User Checkpoints
 
-You approve at key points:
-- After SURF: Review findings before planning
-- After PLAN: Review plan before implementation
+You approve at two key points:
+- **After SURF** — review what the agents found before planning starts
+- **After PLAN** — review the final plan (with critiques addressed) before implementation
+
+Use `--yes` to auto-proceed through all checkpoints.
 
 ### Agent Questions
 
-Agents can ask clarifying questions at any phase. These are surfaced to you for answers before continuing.
+Agents can surface clarifying questions at any phase. These are collected and presented to you for answers before the pipeline continues.
+
+## Model Tiering
+
+The system uses different models for different jobs to balance quality and speed:
+
+- **Deep reasoning tasks** (planning, implementation, synthesis) use the most capable model
+- **Routine tasks** (exploration, critiques, verification) use a faster, cheaper model
+
+This keeps costs down without sacrificing quality where it matters most.
 
 ## State
 
-All state is stored in `.robot-consortium/`:
-- `state.json` - Current phase, tasks, costs
-- `findings/` - Surfer outputs
-- `plans/` - City Planner outputs
-- `reviews/` - Pig outputs
-- `final-plan.md` - Approved implementation plan
+All state is stored in `.robot-consortium/` in the working directory:
 
-## Cost
+| Path | Contents |
+|------|----------|
+| `state.json` | Current phase, tasks, costs, configuration |
+| `findings/` | Surfer exploration outputs |
+| `plans/` | Individual planner proposals |
+| `critiques/` | Rat adversarial critiques |
+| `final-plan.md` | Synthesized implementation plan |
+| `reviews/` | OINK verification results |
 
-Tracks token usage per phase. City Planners and Dawgs use Opus (expensive but smart). Surfers and Pigs use the default model.
+Use `rc status` to see current progress. Use `rc resume` to pick up where you left off. Use `rc abort` to clean up and start fresh.
 
 ## License
 
