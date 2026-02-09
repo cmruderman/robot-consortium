@@ -1,8 +1,8 @@
 # Robot Consortium
 
-Multi-agent orchestration CLI for Claude Code. Gastown without the bullshit.
+Multi-agent orchestration CLI for Claude Code.
 
-You give it a task. It spins up a team of AI agents that explore your codebase, plan an approach, challenge the plan for flaws, implement the code, verify the result, and open a PR — all automatically.
+You give it a task. It spins up a team of AI agents that explore your codebase, plan an approach, challenge the plan for flaws, write tests, implement the code, verify everything works, and open a PR — all automatically.
 
 ```
 You: "Add rate limiting to the API"
@@ -12,8 +12,10 @@ You: "Add rate limiting to the API"
   Rats poke holes in the plans and find what'll break
   Robot King merges the best ideas into one battle-tested plan
   You review and approve the plan
-  Dawgs write the code in parallel
-  Pigs verify it works (lint, tests, code review)
+  Test Dawgs write tests defining expected behavior
+  Impl Dawgs write code to pass those tests
+  Each task is verified immediately — failures get retried
+  Pigs run a final sweep (lint, full test suite, code review)
   PR gets opened with a clean description
 
 You: review the PR
@@ -26,6 +28,8 @@ npm install
 npm run build
 npm link
 ```
+
+Requires [Claude Code](https://claude.ai/code) and the `gh` CLI for GitHub integration.
 
 ## Usage
 
@@ -48,12 +52,6 @@ rc start "Fix login bug" --branch fix/login-bug
 # Use current branch (skip branch creation)
 rc start "Fix login bug" --no-branch
 
-# Skip verification and CI
-rc start "Add button" --skip-oink --skip-ci
-
-# Skip rat challengers during planning
-rc start "Simple fix" --skip-rats
-
 # Auto-proceed through checkpoints
 rc start "Add feature" --yes
 
@@ -63,10 +61,8 @@ rc start "Debug issue" --verbose
 # Check status
 rc status
 
-# Resume a paused task
+# Resume a paused task (with optional flags)
 rc resume
-
-# Resume with flags
 rc resume --skip-oink --verbose
 
 # Abort and clean up
@@ -80,183 +76,144 @@ Shorthand: `rc` works the same as `robot-consortium`.
 | Option | Description |
 |--------|-------------|
 | `"description"` | Inline task description |
-| `--file <path>` | Read from markdown file |
-| `--issue <ref>` | Fetch from GitHub issue (requires `gh` CLI) |
+| `--file <path>` | Read task from a markdown file |
+| `--issue <ref>` | Fetch task from a GitHub issue (requires `gh` CLI) |
 | `--branch <name>` | Custom git branch name |
 | `--no-branch` | Skip branch creation, use current branch |
 | `--yes` | Auto-proceed through all checkpoints |
 | `--verbose` | Stream agent output in real-time |
-| `--skip-oink` | Skip the OINK verification phase |
-| `--skip-ci` | Skip the CI_CHECK phase |
-| `--skip-rats` | Skip the Rat challenge phase during planning |
+| `--skip-oink` | Skip verification phase (lint, tests, code review) |
+| `--skip-ci` | Skip CI monitoring and auto-fix phase |
+| `--skip-rats` | Skip adversarial plan critique phase |
 
-For `--issue`, you can provide:
-- Just the number: `--issue 123` (uses current repo)
-- Full URL: `--issue https://github.com/owner/repo/issues/123`
+For `--issue`, you can provide just the number (`--issue 123`) or a full URL (`--issue https://github.com/owner/repo/issues/123`). Issue content includes title, body, labels, and comments.
 
-Issue content includes title, body, labels, and comments.
+### Skip Flags
+
+Skip flags let you control which phases run. Useful during development or when you want faster iteration.
+
+**`--skip-rats`** — Skips the adversarial critique step during planning. Planners still propose approaches and Robot King still synthesizes a final plan, but no one challenges it for flaws first. Use this for simple, low-risk tasks where the extra scrutiny isn't worth the time.
+
+**`--skip-oink`** — Skips the final verification sweep (lint, full test suite, code review, spec compliance). Per-task verification during BUILD still runs, so individual tasks are still tested — you're just skipping the integration-level check. Use this when you want to review the code yourself before running the full suite.
+
+**`--skip-ci`** — Skips the CI monitoring and auto-fix loop after the PR is created. The PR still gets opened, but the system won't wait for CI to pass or attempt fixes. Use this when you'll handle CI failures yourself.
+
+All skip flags work on both `start` and `resume`:
+
+```bash
+# Fast iteration: skip verification and CI, auto-proceed
+rc start "Quick fix" --skip-oink --skip-ci --yes
+
+# Resume and skip CI this time
+rc resume --skip-ci
+```
 
 ## How It Works
 
+The pipeline runs six phases in sequence. Each phase uses specialized agents working in parallel where possible.
+
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           ROBOT CONSORTIUM                                  │
-│                                                                             │
-│  rc start "task description"                                                │
-│  ┌──────┐    ┌──────┐    ┌──────┐    ┌──────┐    ┌────┐    ┌────────┐      │
-│  │ SURF │───▶│ PLAN │───▶│BUILD │───▶│ OINK │───▶│ PR │───▶│CI_CHECK│─▶DONE│
-│  └──┬───┘    └──┬───┘    └──┬───┘    └──┬───┘    └────┘    └───┬────┘      │
-│     │           │           │           │                       │           │
-│     │           │           │           │    ┌──────────────────┘           │
-│     │           │           │           │    │ Up to 3 fix attempts         │
-│     │           │           │    FAIL?  │    │                              │
-│     │           │           │◀──────────┘    │  --skip-ci                   │
-│     │           │           │                │  skips this ─────────▶ DONE  │
-│     │           │           │                │                              │
-│     │           │      --skip-oink           │                              │
-│     │           │      skips OINK ───────────┼─────────────────────▶ DONE   │
-│     │           │           │                │                              │
-└─────┼───────────┼───────────┼────────────────┼──────────────────────────────┘
-      │           │           │                │
-      ▼           ▼           ▼                ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            AGENT DETAILS                                    │
-│                                                                             │
-│  SURF                          PLAN                                         │
-│  ┌─────────────────────┐       ┌─────────────────────────────────────┐      │
-│  │ Robot King (Opus)    │       │ Robot King (Opus)                   │      │
-│  │ analyzes task,       │       │ analyzes findings,                  │      │
-│  │ assigns focuses      │       │ assigns perspectives                │      │
-│  │         │            │       │         │                           │      │
-│  │         ▼            │       │         ▼                           │      │
-│  │ ┌─────┐┌─────┐┌───┐ │       │ ┌──────┐┌──────┐┌──────┐          │      │
-│  │ │Surf1││Surf2││...│ │       │ │Plan1 ││Plan2 ││Plan3 │          │      │
-│  │ │Sonnt││Sonnt││   │ │       │ │Opus  ││Opus  ││Opus  │          │      │
-│  │ └──┬──┘└──┬──┘└─┬─┘ │       │ └──┬───┘└──┬───┘└──┬───┘          │      │
-│  │    └──────┴─────┘    │       │    └───────┴───────┘               │      │
-│  │         │            │       │            │                        │      │
-│  │         ▼            │       │            ▼                        │      │
-│  │   findings/*.md      │       │     plans/*.md                     │      │
-│  └─────────────────────┘       │            │                        │      │
-│                                 │            ▼                        │      │
-│                                 │  RAT PHASE (--skip-rats to skip)   │      │
-│                                 │  ┌──────┐┌──────┐┌──────┐         │      │
-│                                 │  │Rat 1 ││Rat 2 ││Rat 3 │         │      │
-│                                 │  │Sonnt ││Sonnt ││Sonnt │         │      │
-│                                 │  │flaws ││scope ││gaps  │         │      │
-│                                 │  └──┬───┘└──┬───┘└──┬───┘         │      │
-│                                 │     └───────┴───────┘              │      │
-│                                 │             │                       │      │
-│                                 │             ▼                       │      │
-│                                 │      critiques/*.md                │      │
-│                                 │             │                       │      │
-│                                 │             ▼                       │      │
-│                                 │  Robot King (Opus)                  │      │
-│                                 │  synthesizes plans + critiques      │      │
-│                                 │             │                       │      │
-│                                 │             ▼                       │      │
-│                                 │      final-plan.md                 │      │
-│                                 └─────────────────────────────────────┘      │
-│                                                                             │
-│  BUILD                          OINK                                        │
-│  ┌─────────────────────┐       ┌─────────────────────────────────────┐      │
-│  │ Robot King (Opus)    │       │ Lint Pig (Sonnet) ── runs first     │      │
-│  │ extracts tasks,      │       │         │                           │      │
-│  │ resolves deps        │       │         ▼                           │      │
-│  │         │            │       │ ┌──────┐┌──────┐┌──────┐          │      │
-│  │         ▼            │       │ │Tests ││Review││Spec  │          │      │
-│  │ Independent tasks:   │       │ │Sonnt ││Sonnt ││Sonnt │          │      │
-│  │ ┌─────┐┌─────┐┌───┐ │       │ └──┬───┘└──┬───┘└──┬───┘          │      │
-│  │ │Dawg1││Dawg2││...│ │       │    └───────┴───────┘               │      │
-│  │ │Opus ││Opus ││   │ │       │         │                           │      │
-│  │ └─────┘└─────┘└───┘ │       │    PASS/FAIL verdict               │      │
-│  │         │            │       │         │                           │      │
-│  │         ▼            │       │  FAIL ──┼──▶ back to BUILD         │      │
-│  │ Dependent tasks:     │       │         │    with feedback          │      │
-│  │ ┌─────┐ then ┌─────┐│       │  PASS ──┼──▶ proceed to PR         │      │
-│  │ │Dawg3│─────▶│Dawg4││       │         │                           │      │
-│  │ │Opus │      │Opus ││       │   reviews/*.md                     │      │
-│  │ └─────┘      └─────┘│       └─────────────────────────────────────┘      │
-│  │                      │                                                   │
-│  │  Code changes        │                                                   │
-│  │  written to repo     │                                                   │
-│  └─────────────────────┘                                                   │
-│                                                                             │
-│  CHECKPOINTS                                                                │
-│  ┌───────────────────────────────────────────────────────────────────┐      │
-│  │ After SURF ── review findings before planning                     │      │
-│  │ After PLAN ── review final plan before building                   │      │
-│  │                                                                   │      │
-│  │ Use --yes to auto-proceed through all checkpoints                 │      │
-│  └───────────────────────────────────────────────────────────────────┘      │
-└─────────────────────────────────────────────────────────────────────────────┘
+SURF ──▶ PLAN ──▶ BUILD ──▶ OINK ──▶ PR ──▶ CI_CHECK ──▶ DONE
+              │              │                    │
+              │ --skip-rats  │ --skip-oink        │ --skip-ci
+              │ skips rats   │ skips to PR         │ skips to DONE
+              │ within PLAN  │                     │
 ```
 
-### Phases
+### Phase 1: SURF — Explore the codebase
 
-1. **SURF** — Robot King analyzes the task and spawns 2-5 Surfers (Sonnet) in parallel
-   - Each surfer gets a dynamically assigned focus area (e.g. "api-patterns", "test-infrastructure")
-   - Output: `findings/*.md`
-   - User checkpoint: review findings before planning
+Robot King analyzes the task and decides what to explore (2-5 focus areas like "api-patterns", "test-infrastructure", "similar-features"). A mandatory conventions surfer always runs first — it reads CLAUDE.md, `.claude/commands/`, config files (tsconfig, eslint, prettier, package.json) to extract project rules that all downstream agents must follow.
 
-2. **PLAN** — Robot King determines planner perspectives, spawns 1-5 City Planners (Opus) in parallel
-   - Each planner proposes an approach from a distinct angle
-   - **Rat phase**: 2-3 Rats (Sonnet) then critique all plans, finding flaws and gaps
-   - Robot King synthesizes plans + critiques into one final plan
-   - Output: `plans/*.md`, `critiques/*.md`, `final-plan.md`
-   - User checkpoint: review final plan before building
+Surfers explore in parallel and produce structured findings: actual code blocks with file paths and line numbers, not prose summaries. This gives planners and implementers concrete patterns to reference.
 
-3. **BUILD** — Robot King extracts implementation tasks from the plan
-   - Independent tasks run in parallel via Dawgs (Opus)
-   - Dependent tasks run sequentially
-   - Output: actual code changes
+**Output:** `findings/*.md` — one per surfer
+**Checkpoint:** You review findings before planning begins.
 
-4. **OINK** — 3 Pigs (Sonnet) verify the implementation
-   - Lint pig runs first (fixes formatting issues)
-   - Then in parallel: tests, code review, spec compliance
-   - Pass → proceed to PR
-   - Fail → back to BUILD with feedback
-   - Skippable with `--skip-oink`
+### Phase 2: PLAN — Propose and challenge approaches
 
-5. **PR** — Commits changes, pushes branch, creates PR via `gh`
-   - Robot King generates PR title and description from the diff
+Robot King determines 1-5 planner perspectives based on the findings (e.g., "api-design", "testing-strategy", "migration-safety"). City Planners work in parallel, each proposing an approach from their angle. Every plan must reference specific existing code patterns and separate work into test tasks and implementation tasks.
 
-6. **CI_CHECK** — Waits for CI, auto-fixes failures (up to 3 attempts)
-   - Robot King analyzes failure logs and pushes fixes
-   - Skippable with `--skip-ci`
+Then the Rats attack. Robot King assigns 2-3 adversarial focuses (e.g., "technical-flaws", "overengineering", "missing-requirements") and Rats critique every plan — looking for edge cases, scope creep, vagueness, and gaps. Plans that say "follow existing patterns" without naming the specific file and lines get flagged.
 
-### Model Tiering
+Robot King synthesizes all plans and critiques into one final plan that addresses the valid concerns.
 
-| Agent | Model | Rationale |
-|-------|-------|-----------|
-| Robot King | Opus | Synthesis, coordination, decisions |
-| City Planners | Opus | Strategic planning |
-| Dawgs | Opus | Implementation requires deep reasoning |
-| Surfers | Sonnet | Read-only exploration, speed matters |
-| Rats | Sonnet | Critical analysis, not creation |
-| Pigs | Sonnet | Running lint/tests, structured review |
+**Output:** `plans/*.md`, `critiques/*.md`, `final-plan.md`
+**Checkpoint:** You review the final plan before implementation begins.
+**Skippable:** `--skip-rats` skips the critique step. Plans still get synthesized.
+
+### Phase 3: BUILD — Write tests, then implement
+
+The plan gets broken into test tasks and implementation tasks.
+
+**Stage 1: Tests first.** Test Dawgs write test suites defining expected behavior, edge cases, and error paths. They follow the testing patterns found during SURF. Tests run in parallel.
+
+**Stage 2: Implementation.** Impl Dawgs write code to make the tests pass. They receive the project conventions, code patterns from SURF, and the test files from Stage 1. Independent tasks run in parallel with a live progress display showing each task's status (implementing → verifying → done). Dependent tasks run sequentially.
+
+**Per-task verification:** After each implementation task finishes, a verification agent runs the relevant tests. If tests fail, the feedback is sent back to the implementer for a retry (up to 2 attempts). This catches issues immediately instead of waiting for the final sweep.
+
+**Output:** Code changes written directly to the repo.
+
+### Phase 4: OINK — Final verification sweep
+
+Since per-task checks already ran during BUILD, OINK is a safety net for integration-level issues.
+
+A lint pig runs first and auto-fixes formatting issues. Then three verification pigs run in parallel:
+- **Tests pig** — runs the full test suite (catches cross-cutting regressions)
+- **Code review pig** — reviews the changes for bugs, security issues, code smells
+- **Spec compliance pig** — checks that the implementation matches the plan
+
+If everything passes, the pipeline moves to PR. If anything fails, the feedback goes back to BUILD for another attempt.
+
+**Output:** `reviews/*.md`
+**Skippable:** `--skip-oink` skips straight to PR.
+
+### Phase 5: PR — Open a pull request
+
+Commits any uncommitted changes, pushes the branch, and creates a PR via `gh`. Robot King generates the PR title and description from the diff, commits, and plan.
+
+**Output:** A GitHub pull request.
+
+### Phase 6: CI_CHECK — Monitor and fix CI
+
+Waits for CI checks to complete (up to 15 minutes). If CI passes, done. If CI fails, Robot King analyzes the failure logs, pushes a fix, and waits again — up to 3 fix attempts.
+
+**Skippable:** `--skip-ci` (or `--skip-oink`) skips straight to DONE.
 
 ### User Checkpoints
 
-You approve at key points:
-- After SURF: review findings before planning
-- After PLAN: review final plan (with rat critiques addressed) before implementation
+You approve at two key points:
+- **After SURF** — review what the agents found before planning starts
+- **After PLAN** — review the final plan (with critiques addressed) before implementation
 
 Use `--yes` to auto-proceed through all checkpoints.
 
 ### Agent Questions
 
-Agents can ask clarifying questions at any phase. These are surfaced to you for answers before continuing.
+Agents can surface clarifying questions at any phase. These are collected and presented to you for answers before the pipeline continues.
+
+## Model Tiering
+
+The system uses different models for different jobs to balance quality and speed:
+
+- **Deep reasoning tasks** (planning, implementation, synthesis) use the most capable model
+- **Routine tasks** (exploration, critiques, verification) use a faster, cheaper model
+
+This keeps costs down without sacrificing quality where it matters most.
 
 ## State
 
-All state is stored in `.robot-consortium/`:
-- `state.json` — Current phase, tasks, costs
-- `findings/` — Surfer outputs
-- `plans/` — City Planner outputs
-- `critiques/` — Rat outputs
-- `reviews/` — Pig outputs
-- `final-plan.md` — Synthesized implementation plan
+All state is stored in `.robot-consortium/` in the working directory:
+
+| Path | Contents |
+|------|----------|
+| `state.json` | Current phase, tasks, costs, configuration |
+| `findings/` | Surfer exploration outputs |
+| `plans/` | Individual planner proposals |
+| `critiques/` | Rat adversarial critiques |
+| `final-plan.md` | Synthesized implementation plan |
+| `reviews/` | OINK verification results |
+
+Use `rc status` to see current progress. Use `rc resume` to pick up where you left off. Use `rc abort` to clean up and start fresh.
 
 ## License
 
