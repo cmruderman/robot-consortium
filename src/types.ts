@@ -6,6 +6,8 @@ export type AgentRole = 'robot-king' | 'surfer' | 'city-planner' | 'rat' | 'dawg
 
 export type Model = 'opus' | 'sonnet' | 'haiku';
 
+export type BuildTaskType = 'test' | 'implementation';
+
 export interface Task {
   id: string;
   description: string;
@@ -14,6 +16,9 @@ export interface Task {
   blockedBy?: string[];
   output?: string;
   error?: string;
+  taskType?: BuildTaskType;
+  testFiles?: string[];
+  verificationAttempts?: number;
 }
 
 export interface Question {
@@ -66,6 +71,8 @@ export interface ConsortiumState {
   surferFocuses?: string[];
   plannerPerspectives?: string[];
   ratFocuses?: string[];
+  conventions?: string;
+  codePatterns?: string;
 }
 
 export const AGENT_MODELS: Record<AgentRole, Model> = {

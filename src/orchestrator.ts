@@ -200,7 +200,7 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
         }
 
         if (!oinkResult.passed) {
-          console.log(chalk.yellow('\n⚠️  Verification failed. Feedback:'));
+          console.log(chalk.yellow('\n⚠️  Final verification failed (per-task checks passed but integration issues found). Feedback:'));
           console.log(chalk.dim(oinkResult.feedback?.slice(0, 500) + '...'));
           console.log(chalk.dim('\nFull feedback in .robot-consortium/reviews/'));
 

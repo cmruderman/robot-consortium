@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
 import { loadState, updatePhase, addPlan, addCritique, setFinalPlan, getStateDir, setPlannerPerspectives, setRatFocuses } from '../state.js';
 import { createAgentConfig, runAgentsInParallel, runAgent, buildCityPlannerPrompt, buildPlannerAnalysisPrompt, buildRatPrompt, buildRatAnalysisPrompt } from '../agents.js';
-import { getSurfFindings } from './surf.js';
+import { getSurfFindings, getSurfConventions, getSurfCodePatterns } from './surf.js';
 
 const DEFAULT_PERSPECTIVES = [
   'conservative - minimize risk, prefer incremental changes, prioritize stability',
@@ -22,8 +22,10 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
 
   updatePhase(workingDir, 'PLAN');
 
-  // Get findings from surf phase
+  // Get findings, conventions, and code patterns from surf phase
   const findings = getSurfFindings(workingDir);
+  const conventions = getSurfConventions(workingDir);
+  const codePatterns = getSurfCodePatterns(workingDir);
 
   // Have Robot King analyze findings and determine planner perspectives
   console.log(chalk.dim('  Robot King analyzing findings to determine planner perspectives...\n'));
@@ -48,7 +50,7 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
   // Build prompts for each planner
   const options = planners.map((planner) => ({
     workingDir,
-    prompt: buildCityPlannerPrompt(state.description, findings, planner.focus!),
+    prompt: buildCityPlannerPrompt(state.description, findings, planner.focus!, conventions || undefined, codePatterns || undefined),
     allowedTools: ['Read', 'Glob', 'Grep'],
   }));
 
@@ -109,7 +111,7 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
   // Have Robot King synthesize the plans (with critiques if available)
   console.log(chalk.dim('\n  Robot King synthesizing final plan...'));
 
-  const synthesisResult = await synthesizePlans(workingDir, state.description, allPlans, perspectives.length, critiquesText, phaseOptions.verbose);
+  const synthesisResult = await synthesizePlans(workingDir, state.description, allPlans, perspectives.length, critiquesText, conventions, phaseOptions.verbose);
 
   if (!synthesisResult.success) {
     console.log(chalk.red('  ✗ Failed to synthesize plans'));
@@ -331,6 +333,7 @@ const synthesizePlans = async (
   plans: string,
   plannerCount: number,
   critiques: string,
+  conventions: string,
   verbose?: boolean
 ) => {
   const robotKing = createAgentConfig('robot-king', 0);
@@ -344,14 +347,27 @@ The following critiques were raised against the proposed plans by adversarial Ra
 ${critiques}`
     : '';
 
+  const conventionsSection = conventions
+    ? `
+
+PROJECT CONVENTIONS (the final plan MUST respect these):
+${conventions}`
+    : '';
+
   const prompt = `You are the Robot King. ${plannerCount} City Planner(s) have proposed implementation approaches for this task:
 
 TASK: ${description}
 
 PROPOSED PLANS:
-${plans}${critiquesSection}
+${plans}${critiquesSection}${conventionsSection}
 
 Your job: Synthesize these into ONE final implementation plan. Take the best ideas from each.
+
+CRITICAL REQUIREMENTS:
+1. Every task MUST reference specific files and patterns from the findings (no vague "follow patterns")
+2. Tasks MUST be split into two stages: TESTS FIRST, then IMPLEMENTATION
+3. Each implementation task must specify which test task(s) it needs to make pass
+4. If conventions exist, the plan must explicitly follow them (test commands, lint rules, naming, etc.)
 
 OUTPUT FORMAT:
 # Final Implementation Plan
@@ -359,17 +375,27 @@ OUTPUT FORMAT:
 ## Summary
 [Brief overview of the chosen approach]
 
-## Tasks
-[Numbered list of specific implementation tasks, in order]
+## Stage 1: Test Tasks
+[Numbered list of test-writing tasks — these run FIRST]
+Each task format:
+- T1. [description]
+  - Test file: [path to test file to create/modify]
+  - Pattern to follow: [specific existing test file + lines to use as reference]
+  - Covers: [what behavior this tests]
+
+## Stage 2: Implementation Tasks
+[Numbered list of implementation tasks — these run AFTER tests are written]
+Each task format:
+- I1. [description]
+  - Makes pass: T1, T2 (reference which test tasks)
+  - Files to modify: [specific files]
+  - Pattern to follow: [specific existing code file + lines to use as reference]
 
 ## Files to Modify
 [List each file with what changes are needed]
 
 ## Files to Create
 [List any new files needed]
-
-## Testing Requirements
-[What tests need to be added/modified]
 ${critiques ? `
 ## Critiques Addressed
 [List each valid critique and how the plan addresses it]
@@ -380,7 +406,7 @@ ${critiques ? `
 ## Notes
 [Any important considerations]
 
-Be specific and actionable. This plan will be handed to implementation agents.`;
+Be specific and actionable. Implementation agents will receive test files from Stage 1 and must make them pass in Stage 2.`;
 
   return runAgent(robotKing, {
     workingDir,
