@@ -50,7 +50,7 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
   // Build prompts for each planner
   const options = planners.map((planner) => ({
     workingDir,
-    prompt: buildCityPlannerPrompt(state.description, findings, planner.focus!, conventions || undefined, codePatterns || undefined),
+    prompt: buildCityPlannerPrompt(state.description, findings, planner.focus!, conventions, codePatterns),
     allowedTools: ['Read', 'Glob', 'Grep'],
   }));
 

@@ -49,14 +49,30 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
 
   console.log(chalk.dim(`  Found ${testTasks.length} test task(s) and ${implTasks.length} implementation task(s)\n`));
 
-  // Create task records in state
+  // Create task records in state — remap IDs to match state-generated IDs
+  const idMap: Record<string, string> = {};
   for (const task of tasks) {
-    addTask(workingDir, {
+    const stateTask = addTask(workingDir, {
       description: task.description,
       status: 'pending',
       blockedBy: task.dependencies,
       taskType: task.taskType,
     });
+    idMap[task.id] = stateTask.id;
+  }
+  // Remap all local IDs to match state
+  for (const task of tasks) {
+    task.id = idMap[task.id] || task.id;
+    task.dependencies = task.dependencies.map(d => idMap[d] || d);
+    if (task.testTaskIds) {
+      task.testTaskIds = task.testTaskIds.map(id => idMap[id] || id);
+    }
+  }
+  // Fix blockedBy in state (was stored with LLM IDs)
+  for (const task of tasks) {
+    if (task.dependencies.length > 0) {
+      updateTask(workingDir, task.id, { blockedBy: task.dependencies });
+    }
   }
 
   const questions: string[] = [];
