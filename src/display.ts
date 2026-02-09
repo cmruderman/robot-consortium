@@ -10,6 +10,7 @@ interface AgentEntry {
   focus: string;
   model: string;
   status: AgentStatus;
+  statusText?: string;
   startTime: number;
   endTime?: number;
   summary?: string;
@@ -64,6 +65,14 @@ export class PhaseDisplay {
       agent.status = 'failed';
       agent.endTime = Date.now();
       agent.error = error;
+      this.render();
+    }
+  }
+
+  updateStatus(id: string, statusText: string): void {
+    const agent = this.agents.get(id);
+    if (agent && agent.status === 'running') {
+      agent.statusText = statusText;
       this.render();
     }
   }
@@ -147,7 +156,8 @@ export class PhaseDisplay {
     switch (agent.status) {
       case 'running': {
         const spinner = chalk.cyan(SPINNER_FRAMES[this.spinnerIndex]);
-        return `    ${spinner} ${agent.id} ${chalk.dim(`(${focusName})`)}  ${chalk.yellow('running')}  ${chalk.dim(elapsed)}`;
+        const status = agent.statusText || 'running';
+        return `    ${spinner} ${agent.id} ${chalk.dim(`(${focusName})`)}  ${chalk.yellow(status)}  ${chalk.dim(elapsed)}`;
       }
       case 'done': {
         const summary = agent.summary ? chalk.dim(` — ${agent.summary}`) : '';

@@ -33,6 +33,7 @@ export interface AgentOptions {
   allowedTools?: string[];
   outputFile?: string;
   verbose?: boolean;
+  quiet?: boolean;
   display?: PhaseDisplay;
 }
 
@@ -55,7 +56,7 @@ export const runAgent = async (
   agent: AgentConfig,
   options: AgentOptions
 ): Promise<AgentResult> => {
-  const { workingDir, prompt, systemPrompt, allowedTools, verbose, display } = options;
+  const { workingDir, prompt, systemPrompt, allowedTools, verbose, quiet, display } = options;
 
   const args: string[] = [
     '--print',
@@ -77,7 +78,7 @@ export const runAgent = async (
 
   // When using a display, the display handles all status rendering.
   // When not using a display (solo agent like Robot King), use console.log.
-  if (!display) {
+  if (!display && !quiet) {
     console.log(chalk.dim(`  [${agent.id}]${focusLabel} Starting (${agent.model})...`));
   }
 
@@ -93,7 +94,7 @@ export const runAgent = async (
     });
 
     // Progress update interval — only for solo agents (display handles its own timing)
-    const progressInterval = !display
+    const progressInterval = !display && !quiet
       ? setInterval(() => {
           const elapsed = Date.now() - startTime;
           const now = Date.now();
@@ -112,7 +113,7 @@ export const runAgent = async (
       const text = data.toString();
       output += text;
 
-      if (verbose && !display) {
+      if (verbose && !display && !quiet) {
         const lines = text.split('\n');
         lines.forEach((line: string, i: number) => {
           if (i === lines.length - 1 && line === '') return;
@@ -124,7 +125,7 @@ export const runAgent = async (
 
     proc.stderr.on('data', (data) => {
       errorOutput += data.toString();
-      if (verbose && !display) {
+      if (verbose && !display && !quiet) {
         console.log(chalk.yellow(`  [${agent.id}] `) + data.toString().trim());
       }
     });
@@ -137,7 +138,7 @@ export const runAgent = async (
         const summary = extractSummary(output);
         if (display) {
           display.markDone(agent.id, summary);
-        } else {
+        } else if (!quiet) {
           const summaryText = summary ? ` — ${summary}` : '';
           console.log(chalk.green(`  [${agent.id}]${focusLabel} Completed (${formatElapsed(elapsed)})${summaryText}`));
         }
@@ -148,7 +149,7 @@ export const runAgent = async (
       } else {
         if (display) {
           display.markFailed(agent.id, errorOutput || `exit code ${code}`);
-        } else {
+        } else if (!quiet) {
           console.log(chalk.red(`  [${agent.id}]${focusLabel} Failed (exit code ${code}, ${formatElapsed(elapsed)})`));
         }
         resolve({
@@ -163,7 +164,7 @@ export const runAgent = async (
       if (progressInterval) clearInterval(progressInterval);
       if (display) {
         display.markFailed(agent.id, err.message);
-      } else {
+      } else if (!quiet) {
         console.log(chalk.red(`  [${agent.id}] Error: ${err.message}`));
       }
       resolve({

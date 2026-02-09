@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
 import { loadState, updatePhase, addTask, updateTask } from '../state.js';
 import { createAgentConfig, runAgent, runAgentsInParallel, buildDawgPrompt, buildTestDawgPrompt, buildTaskVerificationPrompt } from '../agents.js';
+import { PhaseDisplay } from '../display.js';
 import { getFinalPlan } from './plan.js';
 import { getSurfConventions, getSurfCodePatterns } from './surf.js';
 
@@ -27,8 +28,8 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
   updatePhase(workingDir, 'BUILD');
 
   const finalPlan = getFinalPlan(workingDir);
-  const conventions = getSurfConventions(workingDir);
-  const codePatterns = getSurfCodePatterns(workingDir);
+  const conventions = getSurfConventions(workingDir) || undefined;
+  const codePatterns = getSurfCodePatterns(workingDir) || undefined;
 
   // Extract tasks from plan — now categorized as test vs implementation
   const tasks = await extractTasksFromPlan(workingDir, state.description, finalPlan, phaseOptions.verbose);
@@ -76,8 +77,8 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
         state.description,
         finalPlan,
         task.description,
-        conventions || undefined,
-        codePatterns || undefined
+        conventions,
+        codePatterns
       ),
       allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash(yarn*)', 'Bash(npm*)', 'Bash(git diff*)'],
     }));
@@ -136,7 +137,8 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
   // Helper: run implementation + per-task verification
   const runImplWithVerification = async (
     task: BuildTask,
-    dawgIndex: number
+    dawgIndex: number,
+    display?: PhaseDisplay
   ): Promise<{ success: boolean; output: string; error?: string; questions: string[] }> => {
     const taskQuestions: string[] = [];
     const testFiles = getTestFilesForTask(task);
@@ -146,7 +148,13 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
       const isRetry = attempt > 0;
 
       if (isRetry) {
-        console.log(chalk.yellow(`  ↻ ${dawg.id} retry ${attempt}/${MAX_VERIFICATION_ATTEMPTS} for: ${task.description.slice(0, 50)}...`));
+        if (display) {
+          display.updateStatus(task.id, `retry ${attempt}/${MAX_VERIFICATION_ATTEMPTS}`);
+        } else {
+          console.log(chalk.yellow(`  ↻ ${dawg.id} retry ${attempt}/${MAX_VERIFICATION_ATTEMPTS} for: ${task.description.slice(0, 50)}...`));
+        }
+      } else if (display) {
+        display.updateStatus(task.id, 'implementing');
       }
 
       const result = await runAgent(dawg, {
@@ -155,15 +163,19 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
           state.description,
           finalPlan,
           task.description,
-          conventions || undefined,
-          codePatterns || undefined,
+          conventions,
+          codePatterns,
           testFiles
         ),
         allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash(yarn*)', 'Bash(npm*)', 'Bash(git diff*)'],
         verbose: phaseOptions.verbose,
+        quiet: !!display,
       });
 
       if (!result.success) {
+        if (display) {
+          display.markFailed(task.id, result.error);
+        }
         return { success: false, output: '', error: result.error, questions: taskQuestions };
       }
 
@@ -174,10 +186,17 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
 
       // Per-task verification: only if we have test files
       if (!testFiles) {
+        if (display) {
+          display.markDone(task.id, 'done');
+        }
         return { success: true, output: result.output, questions: taskQuestions };
       }
 
-      console.log(chalk.dim(`  [${dawg.id}] Running per-task verification...`));
+      if (display) {
+        display.updateStatus(task.id, 'verifying');
+      } else {
+        console.log(chalk.dim(`  [${dawg.id}] Running per-task verification...`));
+      }
 
       const verifyPig = createAgentConfig('pig', dawgIndex);
       const verifyResult = await runAgent(verifyPig, {
@@ -185,28 +204,44 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
         prompt: buildTaskVerificationPrompt(task.description, 'Run the relevant tests and report results.', testFiles),
         allowedTools: ['Bash(yarn*)', 'Bash(npm*)', 'Read', 'Glob', 'Grep'],
         verbose: phaseOptions.verbose,
+        quiet: !!display,
       });
 
       if (!verifyResult.success) {
-        console.log(chalk.yellow(`  [${dawg.id}] Verification pig failed to run — skipping verification`));
+        if (display) {
+          display.markDone(task.id, 'verify skipped');
+        } else {
+          console.log(chalk.yellow(`  [${dawg.id}] Verification pig failed to run — skipping verification`));
+        }
         return { success: true, output: result.output, questions: taskQuestions };
       }
 
       const passed = verifyResult.output.includes('VERDICT: PASS');
 
       if (passed) {
-        console.log(chalk.green(`  [${dawg.id}] ✓ Per-task verification passed`));
+        if (display) {
+          display.markDone(task.id, 'verified');
+        } else {
+          console.log(chalk.green(`  [${dawg.id}] ✓ Per-task verification passed`));
+        }
         return { success: true, output: result.output, questions: taskQuestions };
       }
 
-      console.log(chalk.yellow(`  [${dawg.id}] ✗ Per-task verification failed`));
+      if (!display) {
+        console.log(chalk.yellow(`  [${dawg.id}] ✗ Per-task verification failed`));
+      }
 
       if (attempt < MAX_VERIFICATION_ATTEMPTS) {
-        // Feed failure back to dawg — update task description with feedback
-        task.description = `${task.description}\n\nPREVIOUS ATTEMPT FAILED. Verification feedback:\n${verifyResult.output}\n\nFix the issues and try again.`;
+        // Feed failure back to dawg — only keep the most recent failure to avoid ballooning prompts
+        const baseDescription = task.description.split('\n\nPREVIOUS ATTEMPT FAILED')[0];
+        task.description = `${baseDescription}\n\nPREVIOUS ATTEMPT FAILED. Verification feedback:\n${verifyResult.output}\n\nFix the issues and try again.`;
         updateTask(workingDir, task.id, { verificationAttempts: attempt + 1 });
       } else {
-        console.log(chalk.red(`  [${dawg.id}] Exhausted ${MAX_VERIFICATION_ATTEMPTS} verification retries`));
+        if (display) {
+          display.markFailed(task.id, `failed after ${MAX_VERIFICATION_ATTEMPTS} retries`);
+        } else {
+          console.log(chalk.red(`  [${dawg.id}] Exhausted ${MAX_VERIFICATION_ATTEMPTS} verification retries`));
+        }
         return { success: false, output: result.output, error: `Per-task verification failed after ${MAX_VERIFICATION_ATTEMPTS} retries`, questions: taskQuestions };
       }
     }
@@ -218,14 +253,30 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
   if (independentImpl.length > 0) {
     console.log(chalk.dim(`  Running ${independentImpl.length} independent implementation task(s)...\n`));
 
+    const implDisplay = new PhaseDisplay(
+      `IMPL DAWGS [${independentImpl.length} tasks]`,
+      '🔨',
+      phaseOptions.verbose
+    );
+
+    // Register each task in the display
+    independentImpl.forEach((task, i) => {
+      const dawg = createAgentConfig('dawg', i + testTasks.length + 1);
+      implDisplay.registerAgent(task.id, task.description.slice(0, 60), dawg.model);
+    });
+
+    implDisplay.start();
+
     // For parallel tasks, we run them concurrently but each includes its own verification loop
     const implPromises = independentImpl.map((task, i) => {
       const dawgIndex = i + testTasks.length + 1;
       updateTask(workingDir, task.id, { status: 'in_progress' });
-      return runImplWithVerification(task, dawgIndex);
+      return runImplWithVerification(task, dawgIndex, implDisplay);
     });
 
     const implResults = await Promise.all(implPromises);
+
+    implDisplay.stop();
 
     implResults.forEach((result, i) => {
       const task = independentImpl[i];
@@ -233,11 +284,9 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
 
       if (result.success) {
         updateTask(workingDir, task.id, { status: 'completed', output: result.output });
-        console.log(chalk.green(`  ✓ ${task.id} completed: ${task.description.slice(0, 50)}...`));
       } else {
         updateTask(workingDir, task.id, { status: 'failed', error: result.error });
         failedTasks.push(task.id);
-        console.log(chalk.red(`  ✗ ${task.id} failed: ${result.error}`));
       }
     });
   }

@@ -105,7 +105,7 @@ export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOption
   }
 
   // Allow conventions surfer to fail without blocking the phase
-  const nonConventionFailures = failedSurfers.filter(id => id !== 'surfer-1');
+  const nonConventionFailures = failedSurfers.filter(id => id !== surfers[0].id);
   if (nonConventionFailures.length > 0) {
     console.log(chalk.red(`\n  ${nonConventionFailures.length} surfer(s) failed. Surface to user.`));
     return { success: false };
