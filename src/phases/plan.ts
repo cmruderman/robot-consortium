@@ -98,8 +98,10 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
     console.log(chalk.yellow('\n  ⏭️  Skipping Rat phase (--skip-rats)'));
   } else {
     const ratResult = await runRatPhase(workingDir, state.description, findings, allPlans, phaseOptions.verbose);
-    if (ratResult.success) {
+    if (ratResult.success && ratResult.critiques) {
       critiquesText = ratResult.critiques;
+    } else if (!ratResult.critiques) {
+      console.log(chalk.yellow('\n  ⚠ All rat critiques failed — synthesizing without adversarial review'));
     }
     // Rat failures are non-fatal — we proceed with synthesis regardless
   }

@@ -1,24 +1,18 @@
 import { spawn } from 'child_process';
 import { AgentConfig, AgentRole, AGENT_MODELS, Model } from './types.js';
-import { PhaseDisplay } from './display.js';
+import { PhaseDisplay, formatElapsed } from './display.js';
 import chalk from 'chalk';
-
-const formatElapsed = (ms: number): string => {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${minutes}m ${remainingSeconds}s`;
-};
 
 const extractSummary = (output: string): string => {
   // Try to find a meaningful first line from the output for a completion summary
   const lines = output.trim().split('\n');
   for (const line of lines) {
+    // Skip pure markdown headers (e.g. "# Findings"), separators, and code fences
+    if (/^#+\s*\S+$/.test(line.trim())) continue;
+    if (line.trim().startsWith('---') || line.trim().startsWith('```')) continue;
+
     const cleaned = line.replace(/^#+\s*/, '').trim();
-    // Skip empty lines, markdown separators, and very short lines
-    if (cleaned && cleaned.length > 10 && !cleaned.startsWith('---') && !cleaned.startsWith('```')) {
-      // Truncate to a reasonable length
+    if (cleaned && cleaned.length > 10) {
       return cleaned.length > 80 ? cleaned.slice(0, 77) + '...' : cleaned;
     }
   }

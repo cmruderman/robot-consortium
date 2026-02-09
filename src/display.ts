@@ -16,7 +16,7 @@ interface AgentEntry {
   error?: string;
 }
 
-const formatElapsed = (ms: number): string => {
+export const formatElapsed = (ms: number): string => {
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -98,7 +98,6 @@ export class PhaseDisplay {
   }
 
   private printStaticHeader(): void {
-    const completed = [...this.agents.values()].filter(a => a.status === 'done').length;
     const total = this.agents.size;
     console.log(chalk.cyan(`\n  ${this.phaseIcon} ${this.phaseName} [0/${total}]`));
     for (const agent of this.agents.values()) {
