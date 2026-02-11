@@ -763,6 +763,81 @@ COMMON FIXES:
 Make the minimal changes necessary to fix CI. Don't add unnecessary modifications.`;
 };
 
+export const buildPlanOnlySynthesisPrompt = (
+  description: string,
+  plans: string,
+  plannerCount: number,
+  critiques: string,
+  conventions: string
+): string => {
+  const critiquesSection = critiques
+    ? `
+
+RAT CRITIQUES:
+The following critiques were raised against the proposed plans by adversarial Rat agents. Address the valid critiques in your final plan and note which ones you addressed and which you dismissed (with reasoning).
+
+${critiques}`
+    : '';
+
+  const conventionsSection = conventions
+    ? `
+
+PROJECT CONVENTIONS (the final plan MUST respect these):
+${conventions}`
+    : '';
+
+  return `You are the Robot King. ${plannerCount} City Planner(s) have proposed implementation approaches for this task, and Rat agents have stress-tested them:
+
+TASK: ${description}
+
+PROPOSED PLANS:
+${plans}${critiquesSection}${conventionsSection}
+
+Your job: Synthesize these into ONE comprehensive implementation plan document. This is a PLAN-ONLY run — no code will be written. The output should be a clear, readable document that a developer can follow to implement the changes.
+
+OUTPUT FORMAT:
+# Implementation Plan
+
+## Approach
+[High-level summary of the chosen approach and why it was selected over alternatives]
+
+## Key Decisions
+[Important architectural and design decisions with rationale. For each decision, note what alternatives were considered and why this approach wins.]
+
+## Changes Required
+[Group changes by component/area. For each:]
+
+### [Component/Area Name]
+- **File**: \`path/to/file.ts\` (lines X-Y)
+- **What to change**: [specific description]
+- **Pattern to follow**: [reference existing code that demonstrates the approach]
+
+## New Files
+[Any new files to create, with their purpose and what existing files to use as templates]
+
+## Testing Strategy
+- **Test files to create/modify**: [specific paths]
+- **Test patterns to follow**: [reference existing test files]
+- **Coverage areas**: [what to test — happy path, edge cases, error cases]
+
+## Risks & Mitigations
+[Known risks with concrete mitigation strategies]
+${critiques ? `
+## Critiques Addressed
+[List each valid critique from the Rats and how the plan addresses it]
+
+## Critiques Dismissed
+[List any dismissed critiques with reasoning]
+` : ''}
+## Open Questions
+[Anything that needs clarification before implementation begins]
+
+## Estimated Scope
+[Rough complexity assessment: files touched, new files, test files]
+
+Be specific and actionable. Every file reference should include paths and line numbers. Every pattern reference should point to concrete existing code.`;
+};
+
 export const buildPigLintPrompt = (
   description: string,
   plan: string

@@ -3,7 +3,7 @@ import * as path from 'path';
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
 import { loadState, updatePhase, addPlan, addCritique, setFinalPlan, getStateDir, setPlannerPerspectives, setRatFocuses } from '../state.js';
-import { createAgentConfig, runAgentsInParallel, runAgent, buildCityPlannerPrompt, buildPlannerAnalysisPrompt, buildRatPrompt, buildRatAnalysisPrompt } from '../agents.js';
+import { createAgentConfig, runAgentsInParallel, runAgent, buildCityPlannerPrompt, buildPlannerAnalysisPrompt, buildRatPrompt, buildRatAnalysisPrompt, buildPlanOnlySynthesisPrompt } from '../agents.js';
 import { getSurfFindings, getSurfConventions, getSurfCodePatterns } from './surf.js';
 
 const DEFAULT_PERSPECTIVES = [
@@ -111,7 +111,7 @@ export const runPlanPhase = async (workingDir: string, phaseOptions: PhaseOption
   // Have Robot King synthesize the plans (with critiques if available)
   console.log(chalk.dim('\n  Robot King synthesizing final plan...'));
 
-  const synthesisResult = await synthesizePlans(workingDir, state.description, allPlans, perspectives.length, critiquesText, conventions, phaseOptions.verbose);
+  const synthesisResult = await synthesizePlans(workingDir, state.description, allPlans, perspectives.length, critiquesText, conventions, phaseOptions.verbose, phaseOptions.planOnly);
 
   if (!synthesisResult.success) {
     console.log(chalk.red('  ✗ Failed to synthesize plans'));
@@ -334,9 +334,20 @@ const synthesizePlans = async (
   plannerCount: number,
   critiques: string,
   conventions: string,
-  verbose?: boolean
+  verbose?: boolean,
+  planOnly?: boolean
 ) => {
   const robotKing = createAgentConfig('robot-king', 0);
+
+  if (planOnly) {
+    const prompt = buildPlanOnlySynthesisPrompt(description, plans, plannerCount, critiques, conventions);
+    return runAgent(robotKing, {
+      workingDir,
+      prompt,
+      allowedTools: ['Read'],
+      verbose,
+    });
+  }
 
   const critiquesSection = critiques
     ? `

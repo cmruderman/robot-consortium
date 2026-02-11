@@ -44,12 +44,14 @@ export interface RunOptions {
   skipOink?: boolean;
   skipCi?: boolean;
   skipRats?: boolean;
+  planOnly?: boolean;
 }
 
 let verboseMode = false;
 let skipOink = false;
 let skipCi = false;
 let skipRats = false;
+let planOnly = false;
 
 export const runConsortium = async (workingDir: string, options: RunOptions = {}): Promise<void> => {
   autoYes = options.yes ?? false;
@@ -57,6 +59,7 @@ export const runConsortium = async (workingDir: string, options: RunOptions = {}
   skipOink = options.skipOink ?? false;
   skipCi = options.skipCi ?? false;
   skipRats = options.skipRats ?? false;
+  planOnly = options.planOnly ?? false;
 
   const state = loadState(workingDir);
   if (!state) {
@@ -83,7 +86,10 @@ export const runConsortium = async (workingDir: string, options: RunOptions = {}
   if (skipRats) {
     console.log(chalk.yellow('   Mode: Skip Rats (--skip-rats)'));
   }
-  if (autoYes || verboseMode || skipOink || skipCi || skipRats) {
+  if (planOnly) {
+    console.log(chalk.yellow('   Mode: Plan Only (--plan-only)'));
+  }
+  if (autoYes || verboseMode || skipOink || skipCi || skipRats || planOnly) {
     console.log('');
   }
 
@@ -139,7 +145,7 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
       }
 
       case 'PLAN': {
-        const planResult = await runPlanPhase(workingDir, { verbose: verboseMode, skipRats });
+        const planResult = await runPlanPhase(workingDir, { verbose: verboseMode, skipRats, planOnly });
 
         if (!planResult.success) {
           console.log(chalk.red('\n❌ PLAN phase failed. Please review and retry.'));
@@ -151,6 +157,22 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
           console.log(chalk.yellow('\n📋 Agents have questions:'));
           planResult.questions.forEach(q => console.log(`   ${q}`));
           await ask('\nPress Enter after addressing these questions to continue...');
+        }
+
+        if (planOnly) {
+          // Plan-only mode: stop here, output the plan, and mark DONE
+          const stateDir = `${workingDir}/.robot-consortium`;
+          console.log(chalk.green('\n' + '═'.repeat(60)));
+          console.log(chalk.bold.green('  ✓ PLAN COMPLETE'));
+          console.log(chalk.dim(`    Plan document: ${stateDir}/final-plan.md`));
+          console.log(chalk.dim(`    Individual plans: ${stateDir}/plans/`));
+          console.log(chalk.dim(`    Critiques: ${stateDir}/critiques/`));
+          console.log(chalk.dim(`    Findings: ${stateDir}/findings/`));
+          const totalCost = getTotalCost(workingDir);
+          console.log(chalk.dim(`    Total estimated cost: $${totalCost.toFixed(2)}`));
+          console.log(chalk.green('═'.repeat(60) + '\n'));
+          updatePhase(workingDir, 'DONE');
+          return;
         }
 
         // User checkpoint
