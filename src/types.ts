@@ -89,4 +89,5 @@ export const PHASE_ORDER: Phase[] = ['INIT', 'SURF', 'PLAN', 'BUILD', 'OINK', 'P
 export interface PhaseOptions {
   verbose?: boolean;
   skipRats?: boolean;
+  planOnly?: boolean;
 }

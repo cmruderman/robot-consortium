@@ -25,6 +25,7 @@ interface StartOptions {
   skipOink?: boolean;
   skipCi?: boolean;
   skipRats?: boolean;
+  planOnly?: boolean;
 }
 
 const resolveDescription = async (
@@ -109,6 +110,7 @@ program
   .option('--skip-oink', 'Skip the OINK verification phase')
   .option('--skip-ci', 'Skip the CI_CHECK phase')
   .option('--skip-rats', 'Skip the Rat challenge phase during planning')
+  .option('--plan-only', 'Run SURF and PLAN phases only — output a plan document, no code changes')
   .action(async (inlineDescription: string | undefined, options: StartOptions) => {
     const workingDir = options.directory || process.cwd();
 
@@ -212,6 +214,7 @@ program
       skipOink: options.skipOink,
       skipCi: options.skipCi,
       skipRats: options.skipRats,
+      planOnly: options.planOnly,
     });
   });
 
@@ -224,7 +227,8 @@ program
   .option('--skip-oink', 'Skip the OINK verification phase')
   .option('--skip-ci', 'Skip the CI_CHECK phase')
   .option('--skip-rats', 'Skip the Rat challenge phase during planning')
-  .action(async (options: { directory?: string; yes?: boolean; verbose?: boolean; skipOink?: boolean; skipCi?: boolean; skipRats?: boolean }) => {
+  .option('--plan-only', 'Run SURF and PLAN phases only — output a plan document, no code changes')
+  .action(async (options: { directory?: string; yes?: boolean; verbose?: boolean; skipOink?: boolean; skipCi?: boolean; skipRats?: boolean; planOnly?: boolean }) => {
     const workingDir = options.directory || process.cwd();
 
     const state = loadState(workingDir);
@@ -251,6 +255,7 @@ program
       skipOink: options.skipOink,
       skipCi: options.skipCi,
       skipRats: options.skipRats,
+      planOnly: options.planOnly,
     });
   });
 
