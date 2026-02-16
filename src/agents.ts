@@ -786,7 +786,8 @@ PROJECT CONVENTIONS (the final plan MUST respect these):
 ${conventions}`
     : '';
 
-  return `You are the Robot King. ${plannerCount} City Planner(s) have proposed implementation approaches for this task, and Rat agents have stress-tested them:
+  const ratClause = critiques ? ', and Rat agents have stress-tested them' : '';
+  return `You are the Robot King. ${plannerCount} City Planner(s) have proposed implementation approaches for this task${ratClause}:
 
 TASK: ${description}
 

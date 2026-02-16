@@ -1,6 +1,6 @@
 import * as readline from 'readline';
 import chalk from 'chalk';
-import { loadState, updatePhase, getTotalCost } from './state.js';
+import { loadState, updatePhase, getTotalCost, getStateDir } from './state.js';
 import { runSurfPhase, runPlanPhase, runBuildPhase, runOinkPhase, runPRPhase, runCICheckPhase } from './phases/index.js';
 import { Phase } from './types.js';
 
@@ -64,6 +64,11 @@ export const runConsortium = async (workingDir: string, options: RunOptions = {}
   const state = loadState(workingDir);
   if (!state) {
     throw new Error('No consortium state found. Run "robot-consortium start" first.');
+  }
+
+  if (planOnly && ['BUILD', 'OINK', 'PR', 'CI_CHECK'].includes(state.phase)) {
+    console.log(chalk.yellow(`\n⚠️  --plan-only has no effect when resuming from ${state.phase} (already past PLAN phase)\n`));
+    planOnly = false;
   }
 
   console.log(chalk.bold.cyan('\n👑 ROBOT CONSORTIUM'));
@@ -161,12 +166,11 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
 
         if (planOnly) {
           // Plan-only mode: stop here, output the plan, and mark DONE
-          const stateDir = `${workingDir}/.robot-consortium`;
+          const stateDir = getStateDir(workingDir);
           console.log(chalk.green('\n' + '═'.repeat(60)));
           console.log(chalk.bold.green('  ✓ PLAN COMPLETE'));
           console.log(chalk.dim(`    Plan document: ${stateDir}/final-plan.md`));
           console.log(chalk.dim(`    Individual plans: ${stateDir}/plans/`));
-          console.log(chalk.dim(`    Critiques: ${stateDir}/critiques/`));
           console.log(chalk.dim(`    Findings: ${stateDir}/findings/`));
           const totalCost = getTotalCost(workingDir);
           console.log(chalk.dim(`    Total estimated cost: $${totalCost.toFixed(2)}`));
