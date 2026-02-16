@@ -85,6 +85,7 @@ Shorthand: `rc` works the same as `robot-consortium`.
 | `--skip-oink` | Skip verification phase (lint, tests, code review) |
 | `--skip-ci` | Skip CI monitoring and auto-fix phase |
 | `--skip-rats` | Skip adversarial plan critique phase |
+| `--plan-only` | Run SURF and PLAN only — output a plan document, no code changes |
 
 For `--issue`, you can provide just the number (`--issue 123`) or a full URL (`--issue https://github.com/owner/repo/issues/123`). Issue content includes title, body, labels, and comments.
 
@@ -98,11 +99,19 @@ Skip flags let you control which phases run. Useful during development or when y
 
 **`--skip-ci`** — Skips the CI monitoring and auto-fix loop after the PR is created. The PR still gets opened, but the system won't wait for CI to pass or attempt fixes. Use this when you'll handle CI failures yourself.
 
-All skip flags work on both `start` and `resume`:
+**`--plan-only`** — Runs SURF and PLAN (including Rats, unless `--skip-rats`) but stops before BUILD. Outputs a human-readable implementation plan document instead of a machine-parseable task list. No code changes are made. Use this when you want to research and plan before committing to implementation, or when you want to hand the plan to a developer.
+
+All flags work on both `start` and `resume`:
 
 ```bash
 # Fast iteration: skip verification and CI, auto-proceed
 rc start "Quick fix" --skip-oink --skip-ci --yes
+
+# Research and plan without writing any code
+rc start "Refactor auth system" --plan-only
+
+# Plan without adversarial review
+rc start "Simple feature" --plan-only --skip-rats --yes
 
 # Resume and skip CI this time
 rc resume --skip-ci
@@ -114,10 +123,12 @@ The pipeline runs six phases in sequence. Each phase uses specialized agents wor
 
 ```
 SURF ──▶ PLAN ──▶ BUILD ──▶ OINK ──▶ PR ──▶ CI_CHECK ──▶ DONE
-              │              │                    │
-              │ --skip-rats  │ --skip-oink        │ --skip-ci
-              │ skips rats   │ skips to PR         │ skips to DONE
-              │ within PLAN  │                     │
+           │  │              │                    │
+           │  │ --skip-rats  │ --skip-oink        │ --skip-ci
+           │  │ skips rats   │ skips to PR         │ skips to DONE
+           │  │ within PLAN  │                     │
+           │
+           └──▶ DONE  (--plan-only: outputs plan document, no code changes)
 ```
 
 ### Phase 1: SURF — Explore the codebase
@@ -208,6 +219,8 @@ All state is stored in `.robot-consortium/` in the working directory:
 |------|----------|
 | `state.json` | Current phase, tasks, costs, configuration |
 | `findings/` | Surfer exploration outputs |
+| `conventions.md` | Project conventions extracted by conventions surfer |
+| `code-patterns.md` | Code patterns extracted by surfers |
 | `plans/` | Individual planner proposals |
 | `critiques/` | Rat adversarial critiques |
 | `final-plan.md` | Synthesized implementation plan |
