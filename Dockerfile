@@ -18,5 +18,10 @@ COPY package*.json tsconfig.json ./
 COPY src/ src/
 RUN npm install && npm run build && npm link
 
+# Create non-root user (Claude CLI refuses --dangerously-skip-permissions as root)
+RUN useradd -m -s /bin/bash rcuser
+RUN mkdir -p /work && chown rcuser:rcuser /work
+USER rcuser
+
 WORKDIR /work
 ENTRYPOINT ["rc"]
