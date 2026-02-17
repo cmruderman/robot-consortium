@@ -77,20 +77,6 @@ export const convertToHttpsUrl = (url: string): string => {
   return url;
 };
 
-export const resolveRepoUrl = (workingDir: string): string => {
-  try {
-    const url = execSync('git remote get-url origin', {
-      cwd: workingDir,
-      encoding: 'utf-8',
-    }).trim();
-    return convertToHttpsUrl(url);
-  } catch {
-    throw new Error(
-      'Could not determine repo URL from git remote. Use --repo to specify it explicitly.'
-    );
-  }
-};
-
 const getRcProjectRoot = (): string => {
   // The RC project root is where the Dockerfile lives.
   // This file is at src/container.ts -> compiled to dist/container.js
@@ -156,14 +142,14 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
     return 1;
   }
 
-  // Resolve repo URL
-  let repoUrl: string;
-  try {
-    repoUrl = repo || resolveRepoUrl(workingDir);
-  } catch (error) {
-    console.log(chalk.red(`  ✗ ${(error as Error).message}`));
+  // Resolve repo URL: --repo flag > .env REPO_URL (required)
+  const rawRepoUrl = repo || envVars.REPO_URL;
+  if (!rawRepoUrl) {
+    console.log(chalk.red('  ✗ REPO_URL not found'));
+    console.log(chalk.dim('  Set it via --repo flag or REPO_URL in your .env file'));
     return 1;
   }
+  const repoUrl = convertToHttpsUrl(rawRepoUrl);
 
   console.log(chalk.dim(`  Repo: ${repoUrl}`));
   console.log(chalk.dim(`  Base branch: ${baseBranch || 'default'}`));
