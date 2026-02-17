@@ -1,0 +1,183 @@
+import { spawn, execSync } from 'child_process';
+import * as path from 'path';
+import chalk from 'chalk';
+
+export interface ContainerOptions {
+  description: string;
+  workingDir: string;
+  repo?: string;
+  baseBranch?: string;
+  imageName?: string;
+  verbose?: boolean;
+  skipOink?: boolean;
+  skipCi?: boolean;
+  skipRats?: boolean;
+  planOnly?: boolean;
+}
+
+const DEFAULT_IMAGE_NAME = 'robot-consortium';
+
+export const convertToHttpsUrl = (url: string): string => {
+  // git@github.com:owner/repo.git -> https://github.com/owner/repo.git
+  const sshMatch = url.match(/^git@([^:]+):(.+)$/);
+  if (sshMatch) {
+    const [, host, pathPart] = sshMatch;
+    return `https://${host}/${pathPart}`;
+  }
+  return url;
+};
+
+export const resolveRepoUrl = (workingDir: string): string => {
+  try {
+    const url = execSync('git remote get-url origin', {
+      cwd: workingDir,
+      encoding: 'utf-8',
+    }).trim();
+    return convertToHttpsUrl(url);
+  } catch {
+    throw new Error(
+      'Could not determine repo URL from git remote. Use --repo to specify it explicitly.'
+    );
+  }
+};
+
+const getRcProjectRoot = (): string => {
+  // The RC project root is where the Dockerfile lives.
+  // This file is at src/container.ts -> compiled to dist/container.js
+  // So project root is one level up from dist/
+  return path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+};
+
+export const ensureImage = (imageName: string): void => {
+  const rcRoot = getRcProjectRoot();
+
+  try {
+    const result = execSync(`docker images -q ${imageName}`, {
+      encoding: 'utf-8',
+    }).trim();
+
+    if (result) {
+      console.log(chalk.dim(`  Using existing Docker image: ${imageName}`));
+      return;
+    }
+  } catch {
+    // docker command failed, try to build anyway
+  }
+
+  console.log(chalk.dim(`  Building Docker image: ${imageName}...`));
+  execSync(`docker build -t ${imageName} .`, {
+    cwd: rcRoot,
+    stdio: 'inherit',
+  });
+  console.log(chalk.green(`  ✓ Docker image built: ${imageName}`));
+};
+
+export const runInContainer = async (options: ContainerOptions): Promise<number> => {
+  const {
+    description,
+    workingDir,
+    repo,
+    baseBranch,
+    verbose,
+    skipOink,
+    skipCi,
+    skipRats,
+    planOnly,
+  } = options;
+  const imageName = options.imageName || DEFAULT_IMAGE_NAME;
+
+  console.log(chalk.bold.cyan('\n🐳 ROBOT CONSORTIUM — CONTAINER MODE\n'));
+
+  // Validate required env vars
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) {
+    console.log(chalk.red('  ✗ ANTHROPIC_API_KEY environment variable is required for container mode'));
+    return 1;
+  }
+
+  const ghToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (!ghToken) {
+    console.log(chalk.red('  ✗ GH_TOKEN (or GITHUB_TOKEN) environment variable is required for container mode'));
+    return 1;
+  }
+
+  // Resolve repo URL
+  let repoUrl: string;
+  try {
+    repoUrl = repo || resolveRepoUrl(workingDir);
+  } catch (error) {
+    console.log(chalk.red(`  ✗ ${(error as Error).message}`));
+    return 1;
+  }
+
+  console.log(chalk.dim(`  Repo: ${repoUrl}`));
+  console.log(chalk.dim(`  Base branch: ${baseBranch || 'default'}`));
+  console.log(chalk.dim(`  Image: ${imageName}`));
+
+  // Ensure Docker image exists
+  try {
+    ensureImage(imageName);
+  } catch (error) {
+    console.log(chalk.red(`  ✗ Failed to build Docker image: ${(error as Error).message}`));
+    return 1;
+  }
+
+  // Build the shell script that runs inside the container
+  const cloneBranch = baseBranch ? `--branch ${baseBranch} ` : '';
+  const escapedDescription = description.replace(/'/g, "'\\''");
+
+  // Build RC flags
+  const rcFlags: string[] = ['--yes'];
+  if (verbose) rcFlags.push('--verbose');
+  if (skipOink) rcFlags.push('--skip-oink');
+  if (skipCi) rcFlags.push('--skip-ci');
+  if (skipRats) rcFlags.push('--skip-rats');
+  if (planOnly) rcFlags.push('--plan-only');
+
+  const innerScript = [
+    // Configure git to use GH_TOKEN for HTTPS auth
+    'git config --global credential.helper "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f"',
+    // Clone the repo
+    `git clone ${cloneBranch}${repoUrl} /work/repo`,
+    'cd /work/repo',
+    // Run RC
+    `rc start '${escapedDescription}' ${rcFlags.join(' ')}`,
+  ].join(' && ');
+
+  // Build docker run args
+  const dockerArgs: string[] = [
+    'run',
+    '--rm',
+    '-e', `ANTHROPIC_API_KEY=${anthropicKey}`,
+    '-e', `GH_TOKEN=${ghToken}`,
+    '-e', 'CLAUDE_CODE_ACCEPT_TOS=yes',
+    '--entrypoint', '/bin/bash',
+    imageName,
+    '-c', innerScript,
+  ];
+
+  console.log(chalk.dim('  Launching container...\n'));
+
+  // Spawn docker and stream output
+  return new Promise((resolve) => {
+    const proc = spawn('docker', dockerArgs, {
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+
+    proc.on('close', (code) => {
+      const exitCode = code ?? 1;
+      if (exitCode === 0) {
+        console.log(chalk.green('\n  ✓ Container completed successfully'));
+      } else {
+        console.log(chalk.red(`\n  ✗ Container exited with code ${exitCode}`));
+      }
+      resolve(exitCode);
+    });
+
+    proc.on('error', (err) => {
+      console.log(chalk.red(`  ✗ Failed to launch Docker: ${err.message}`));
+      console.log(chalk.dim('  Is Docker installed and running?'));
+      resolve(1);
+    });
+  });
+};

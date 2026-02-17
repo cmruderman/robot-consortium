@@ -26,6 +26,10 @@ interface StartOptions {
   skipCi?: boolean;
   skipRats?: boolean;
   planOnly?: boolean;
+  container?: boolean;
+  repo?: string;
+  baseBranch?: string;
+  containerImage?: string;
 }
 
 const resolveDescription = async (
@@ -111,6 +115,10 @@ program
   .option('--skip-ci', 'Skip the CI_CHECK phase')
   .option('--skip-rats', 'Skip the Rat challenge phase during planning')
   .option('--plan-only', 'Run SURF and PLAN phases only — output a plan document, no code changes')
+  .option('--container', 'Run the entire pipeline inside a Docker container with a fresh repo clone')
+  .option('--repo <url>', 'Repository URL to clone inside the container (defaults to current repo origin)')
+  .option('--base-branch <branch>', 'Branch to checkout before starting inside the container')
+  .option('--container-image <name>', 'Docker image name (default: robot-consortium)')
   .action(async (inlineDescription: string | undefined, options: StartOptions) => {
     const workingDir = options.directory || process.cwd();
 
@@ -124,6 +132,24 @@ program
     } catch (error) {
       console.log(chalk.red(`\n❌ ${(error as Error).message}\n`));
       process.exit(1);
+    }
+
+    // Container mode: delegate to Docker and exit
+    if (options.container) {
+      const { runInContainer } = await import('./container.js');
+      const code = await runInContainer({
+        description,
+        workingDir,
+        repo: options.repo,
+        baseBranch: options.baseBranch,
+        imageName: options.containerImage,
+        verbose: options.verbose,
+        skipOink: options.skipOink,
+        skipCi: options.skipCi,
+        skipRats: options.skipRats,
+        planOnly: options.planOnly,
+      });
+      process.exit(code);
     }
 
     // Check if there's already an active consortium
