@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { AgentConfig, AgentRole, AGENT_MODELS, Model } from './types.js';
 import { PhaseDisplay, formatElapsed } from './display.js';
+import { buildLearningsSystemPrompt, extractLearningsFromOutput, appendLearnings } from './learnings.js';
 import chalk from 'chalk';
 
 const extractSummary = (output: string): string => {
@@ -221,6 +222,41 @@ export const runAgentsInParallel = async (
   }
 
   return results;
+};
+
+export interface RobotKingOptions extends AgentOptions {
+  focus?: string;
+}
+
+export const runRobotKing = async (
+  options: RobotKingOptions
+): Promise<AgentResult> => {
+  const agent = createAgentConfig('robot-king', 0, options.focus);
+
+  const learningsSystemPrompt = buildLearningsSystemPrompt(options.workingDir);
+  const systemPrompt = options.systemPrompt
+    ? `${options.systemPrompt}\n\n${learningsSystemPrompt}`
+    : learningsSystemPrompt;
+
+  const result = await runAgent(agent, {
+    ...options,
+    systemPrompt,
+  });
+
+  if (result.success) {
+    const { cleanOutput, learnings } = extractLearningsFromOutput(result.output);
+
+    if (learnings) {
+      appendLearnings(options.workingDir, learnings);
+    }
+
+    return {
+      ...result,
+      output: cleanOutput,
+    };
+  }
+
+  return result;
 };
 
 export const buildSurferPrompt = (description: string, focus: string): string => {

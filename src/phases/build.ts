@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
 import { loadState, updatePhase, addTask, updateTask } from '../state.js';
-import { createAgentConfig, runAgent, runAgentsInParallel, buildDawgPrompt, buildTestDawgPrompt, buildTaskVerificationPrompt } from '../agents.js';
+import { createAgentConfig, runAgent, runAgentsInParallel, runRobotKing, buildDawgPrompt, buildTestDawgPrompt, buildTaskVerificationPrompt } from '../agents.js';
 import { PhaseDisplay } from '../display.js';
 import { getFinalPlan } from './plan.js';
 import { getSurfConventions, getSurfCodePatterns } from './surf.js';
@@ -351,8 +351,6 @@ const extractTasksFromPlan = async (
   plan: string,
   verbose?: boolean
 ): Promise<BuildTask[]> => {
-  const robotKing = createAgentConfig('robot-king', 0);
-
   const prompt = `Extract implementation tasks from this plan. The plan should have test tasks and implementation tasks.
 
 TASK: ${description}
@@ -384,7 +382,7 @@ Example:
   {"id": "impl-3", "description": "Wire up endpoint to router", "dependencies": ["impl-1", "impl-2"], "taskType": "implementation", "testTaskIds": ["test-1"]}
 ]`;
 
-  const result = await runAgent(robotKing, {
+  const result = await runRobotKing({
     workingDir,
     prompt,
     allowedTools: [],

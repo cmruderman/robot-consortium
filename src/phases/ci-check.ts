@@ -2,7 +2,7 @@ import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
 import { loadState, saveState, updatePhase } from '../state.js';
-import { createAgentConfig, runAgent, buildCIFixPrompt } from '../agents.js';
+import { runRobotKing, buildCIFixPrompt } from '../agents.js';
 
 const CI_WAIT_MINUTES = 15;
 const MAX_CI_ATTEMPTS = 3;
@@ -78,15 +78,15 @@ export const runCICheckPhase = async (workingDir: string, phaseOptions: PhaseOpt
   const failureLogs = await getFailureLogs(workingDir, state.prNumber);
 
   // Have Robot King analyze and create fix plan
-  const robotKing = createAgentConfig('robot-king', 0, 'ci-fix');
   const fixPrompt = buildCIFixPrompt(ciStatus.details, failureLogs);
 
   console.log(chalk.dim('  Robot King analyzing CI failures...'));
-  const result = await runAgent(robotKing, {
+  const result = await runRobotKing({
     workingDir,
     prompt: fixPrompt,
     allowedTools: ['Read', 'Glob', 'Grep', 'Edit', 'Bash(yarn*)', 'Bash(npm*)', 'Bash(git*)'],
     verbose: phaseOptions.verbose,
+    focus: 'ci-fix',
   });
 
   if (!result.success) {

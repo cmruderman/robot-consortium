@@ -3,7 +3,7 @@ import * as path from 'path';
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
 import { loadState, updatePhase, addFinding, getStateDir, setSurferFocuses, setConventions, setCodePatterns, getConventions, getCodePatterns } from '../state.js';
-import { createAgentConfig, runAgentsInParallel, runAgent, buildSurferPrompt, buildSurferAnalysisPrompt, buildConventionsSurferPrompt } from '../agents.js';
+import { createAgentConfig, runAgentsInParallel, runAgent, runRobotKing, buildSurferPrompt, buildSurferAnalysisPrompt, buildConventionsSurferPrompt } from '../agents.js';
 
 const CONVENTIONS_FOCUS = 'project-conventions: Extract project conventions from CLAUDE.md, .claude/commands/, config files';
 
@@ -126,9 +126,7 @@ const analyzeSurferNeeds = async (
   description: string,
   verbose?: boolean
 ): Promise<string[]> => {
-  const robotKing = createAgentConfig('robot-king', 0);
-
-  const result = await runAgent(robotKing, {
+  const result = await runRobotKing({
     workingDir,
     prompt: buildSurferAnalysisPrompt(description),
     allowedTools: [],

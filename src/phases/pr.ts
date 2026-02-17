@@ -2,7 +2,7 @@ import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
 import { loadState, saveState, updatePhase } from '../state.js';
-import { createAgentConfig, runAgent, buildRobotKingPRPrompt } from '../agents.js';
+import { runRobotKing, buildRobotKingPRPrompt } from '../agents.js';
 
 export interface PRResult {
   success: boolean;
@@ -67,15 +67,15 @@ export const runPRPhase = async (workingDir: string, phaseOptions: PhaseOptions 
   }
 
   // Have Robot King generate PR title and description
-  const robotKing = createAgentConfig('robot-king', 0, 'pr-generation');
   const prompt = buildRobotKingPRPrompt(state.description, diffSummary, commits, state.finalPlan || '');
 
   console.log(chalk.dim('  Robot King analyzing changes...'));
-  const result = await runAgent(robotKing, {
+  const result = await runRobotKing({
     workingDir,
     prompt,
     allowedTools: ['Read', 'Glob', 'Grep'],
     verbose: phaseOptions.verbose,
+    focus: 'pr-generation',
   });
 
   if (!result.success) {

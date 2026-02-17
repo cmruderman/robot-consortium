@@ -3,7 +3,7 @@ import * as path from 'path';
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
 import { loadState, updatePhase, addPlan, addCritique, setFinalPlan, getStateDir, setPlannerPerspectives, setRatFocuses } from '../state.js';
-import { createAgentConfig, runAgentsInParallel, runAgent, buildCityPlannerPrompt, buildPlannerAnalysisPrompt, buildRatPrompt, buildRatAnalysisPrompt, buildPlanOnlySynthesisPrompt } from '../agents.js';
+import { createAgentConfig, runAgentsInParallel, runRobotKing, buildCityPlannerPrompt, buildPlannerAnalysisPrompt, buildRatPrompt, buildRatAnalysisPrompt, buildPlanOnlySynthesisPrompt } from '../agents.js';
 import { getSurfFindings, getSurfConventions, getSurfCodePatterns } from './surf.js';
 
 const DEFAULT_PERSPECTIVES = [
@@ -137,9 +137,7 @@ const analyzePlannerNeeds = async (
   findings: string,
   verbose?: boolean
 ): Promise<string[]> => {
-  const robotKing = createAgentConfig('robot-king', 0);
-
-  const result = await runAgent(robotKing, {
+  const result = await runRobotKing({
     workingDir,
     prompt: buildPlannerAnalysisPrompt(description, findings),
     allowedTools: ['Read'],
@@ -271,9 +269,7 @@ const analyzeRatNeeds = async (
   plans: string,
   verbose?: boolean
 ): Promise<string[]> => {
-  const robotKing = createAgentConfig('robot-king', 0);
-
-  const result = await runAgent(robotKing, {
+  const result = await runRobotKing({
     workingDir,
     prompt: buildRatAnalysisPrompt(description, plans),
     allowedTools: ['Read'],
@@ -337,11 +333,9 @@ const synthesizePlans = async (
   verbose?: boolean,
   planOnly?: boolean
 ) => {
-  const robotKing = createAgentConfig('robot-king', 0);
-
   if (planOnly) {
     const prompt = buildPlanOnlySynthesisPrompt(description, plans, plannerCount, critiques, conventions);
-    return runAgent(robotKing, {
+    return runRobotKing({
       workingDir,
       prompt,
       allowedTools: ['Read'],
@@ -419,7 +413,7 @@ ${critiques ? `
 
 Be specific and actionable. Implementation agents will receive test files from Stage 1 and must make them pass in Stage 2.`;
 
-  return runAgent(robotKing, {
+  return runRobotKing({
     workingDir,
     prompt,
     allowedTools: ['Read'],
