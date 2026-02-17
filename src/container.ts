@@ -43,13 +43,13 @@ const validateRepoUrl = (url: string): void => {
 };
 
 const loadEnvFile = (workingDir: string): Record<string, string> => {
-  const envPath = path.join(workingDir, '.env');
-  if (!fs.existsSync(envPath)) return {};
-
   let content: string;
   try {
-    content = fs.readFileSync(envPath, 'utf-8');
-  } catch {
+    content = fs.readFileSync(path.join(workingDir, '.env'), 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.log(chalk.yellow(`  ⚠ Found .env but could not read it: ${(err as Error).message}`));
+    }
     return {};
   }
 
@@ -62,7 +62,8 @@ const loadEnvFile = (workingDir: string): Record<string, string> => {
     const key = trimmed.slice(0, eqIndex).trim();
     // Strip optional quotes from value
     let value = trimmed.slice(eqIndex + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (value.length >= 2 &&
+        ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
       value = value.slice(1, -1);
     }
     vars[key] = value;
@@ -87,7 +88,7 @@ const resolveClaudeAuth = (envVars: Record<string, string>): ClaudeAuth | undefi
   return undefined;
 };
 
-const resolveGhToken = (envVars: Record<string, string> = {}): string | undefined => {
+const resolveGhToken = (envVars: Record<string, string>): string | undefined => {
   // 1. Environment variables
   if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
@@ -104,7 +105,7 @@ const resolveGhToken = (envVars: Record<string, string> = {}): string | undefine
     }).trim();
     if (token) return token;
   } catch {
-    // gh not authenticated
+    // gh CLI not installed or not authenticated
   }
 
   return undefined;
@@ -121,9 +122,8 @@ export const convertToHttpsUrl = (url: string): string => {
 };
 
 const getRcProjectRoot = (): string => {
-  // The RC project root is where the Dockerfile lives.
   // This file is at src/container.ts -> compiled to dist/container.js
-  // So project root is one level up from dist/
+  // Project root is one level up from dist/
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 };
 
@@ -134,14 +134,18 @@ export const ensureImage = (imageName: string): void => {
   try {
     const result = execSync(`docker images -q '${imageName}'`, {
       encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
 
     if (result) {
       console.log(chalk.dim(`  Using existing Docker image: ${imageName}`));
       return;
     }
-  } catch {
-    // docker command failed, try to build anyway
+  } catch (err) {
+    const msg = (err as Error).message || '';
+    if (msg.includes('Cannot connect') || msg.includes('daemon')) {
+      throw new Error('Docker daemon is not running. Start Docker Desktop and try again.');
+    }
   }
 
   console.log(chalk.dim(`  Building Docker image: ${imageName}...`));
@@ -153,17 +157,7 @@ export const ensureImage = (imageName: string): void => {
 };
 
 export const runInContainer = async (options: ContainerOptions): Promise<number> => {
-  const {
-    description,
-    workingDir,
-    repo,
-    baseBranch,
-    verbose,
-    skipOink,
-    skipCi,
-    skipRats,
-    planOnly,
-  } = options;
+  const { description, workingDir, baseBranch } = options;
   const imageName = options.imageName || DEFAULT_IMAGE_NAME;
 
   console.log(chalk.bold.cyan('\n🐳 ROBOT CONSORTIUM — CONTAINER MODE\n'));
@@ -187,8 +181,8 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
     return 1;
   }
 
-  // Resolve repo URL: --repo flag > .env REPO_URL (required)
-  const rawRepoUrl = repo || envVars.REPO_URL;
+  // Resolve repo URL: --repo flag > .env REPO_URL (one must be set)
+  const rawRepoUrl = options.repo || envVars.REPO_URL;
   if (!rawRepoUrl) {
     console.log(chalk.red('  ✗ REPO_URL not found'));
     console.log(chalk.dim('  Set it via --repo flag or REPO_URL in your .env file'));
@@ -218,42 +212,47 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
     return 1;
   }
 
-  // Build the shell script that runs inside the container
-  // baseBranch and repoUrl are validated above — safe to interpolate with quotes
-  const cloneBranch = baseBranch ? `--branch '${baseBranch}' ` : '';
-  const escapedDescription = description.replace(/'/g, "'\\''");
-
   // Build RC flags
-  const rcFlags: string[] = ['--yes'];
-  if (verbose) rcFlags.push('--verbose');
-  if (skipOink) rcFlags.push('--skip-oink');
-  if (skipCi) rcFlags.push('--skip-ci');
-  if (skipRats) rcFlags.push('--skip-rats');
-  if (planOnly) rcFlags.push('--plan-only');
+  const flagMap: [string, boolean | undefined][] = [
+    ['--verbose', options.verbose],
+    ['--skip-oink', options.skipOink],
+    ['--skip-ci', options.skipCi],
+    ['--skip-rats', options.skipRats],
+    ['--plan-only', options.planOnly],
+  ];
+  const rcFlags = ['--yes', ...flagMap.filter(([, v]) => v).map(([k]) => k)];
 
+  // User-controlled strings (repoUrl, baseBranch, description) are passed via env vars
+  // and a mounted file — never interpolated into the shell string.
   const innerScript = [
-    // Configure git to use GH_TOKEN for HTTPS auth
     'git config --global credential.helper "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f"',
-    // Clone the repo
-    `git clone ${cloneBranch}'${repoUrl}' /work/repo`,
+    'git clone ${CLONE_BRANCH:+--branch "$CLONE_BRANCH"} "$REPO_URL" /work/repo',
     'cd /work/repo',
-    // Run RC
-    `rc start '${escapedDescription}' ${rcFlags.join(' ')}`,
+    `rc start --file /work/description.md ${rcFlags.join(' ')}`,
   ].join(' && ');
 
-  // Write credentials to temp file for --env-file (avoids exposure in process table)
-  const envFile = path.join(os.tmpdir(), `rc-container-${Date.now()}.env`);
-  fs.writeFileSync(envFile, [
+  // Write credentials and config to temp env file (avoids exposure in process table; cleaned up on exit)
+  const tmpId = `${Date.now()}-${process.pid}`;
+  const envFile = path.join(os.tmpdir(), `rc-container-${tmpId}.env`);
+  const descFile = path.join(os.tmpdir(), `rc-description-${tmpId}.md`);
+
+  const envLines = [
     `${claudeAuth.envVar}=${claudeAuth.value}`,
     `GH_TOKEN=${ghToken}`,
     'CLAUDE_CODE_ACCEPT_TOS=yes',
-  ].join('\n'), { mode: 0o600 });
+    `REPO_URL=${repoUrl}`,
+  ];
+  if (baseBranch) envLines.push(`CLONE_BRANCH=${baseBranch}`);
 
-  // Build docker run args
+  fs.writeFileSync(envFile, envLines.join('\n'), { mode: 0o600 });
+  fs.writeFileSync(descFile, description, { mode: 0o644 });
+
+  // Override ENTRYPOINT to run a shell pipeline (clone repo + configure git before rc start)
   const dockerArgs: string[] = [
     'run',
     '--rm',
     '--env-file', envFile,
+    '-v', `${descFile}:/work/description.md:ro`,
     '--entrypoint', '/bin/bash',
     imageName,
     '-c', innerScript,
@@ -268,14 +267,19 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
     });
 
     const cleanup = () => {
-      try { fs.unlinkSync(envFile); } catch {}
+      try { fs.unlinkSync(envFile); } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.error(chalk.yellow(`  ⚠ Could not delete credentials file: ${envFile}`));
+        }
+      }
+      try { fs.unlinkSync(descFile); } catch {}
       process.removeListener('SIGINT', onSignal);
       process.removeListener('SIGTERM', onSignal);
     };
 
-    // Forward signals to the Docker process so Ctrl+C stops the container
+    // Forward signals to the docker CLI process, which propagates them to the container
     const onSignal = (signal: NodeJS.Signals) => {
-      proc.kill(signal);
+      try { proc.kill(signal); } catch {}
     };
     process.on('SIGINT', onSignal);
     process.on('SIGTERM', onSignal);
@@ -286,7 +290,10 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
       if (exitCode === 0) {
         console.log(chalk.green('\n  ✓ Container completed successfully'));
       } else {
-        console.log(chalk.red(`\n  ✗ Container exited with code ${exitCode}`));
+        const hint = exitCode === 137 ? ' (likely OOM — increase Docker memory)'
+          : exitCode === 127 ? ' (command not found in container)'
+          : '';
+        console.log(chalk.red(`\n  ✗ Container exited with code ${exitCode}${hint}`));
       }
       resolve(exitCode);
     });

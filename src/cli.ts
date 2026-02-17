@@ -116,7 +116,7 @@ program
   .option('--skip-rats', 'Skip the Rat challenge phase during planning')
   .option('--plan-only', 'Run SURF and PLAN phases only — output a plan document, no code changes')
   .option('--container', 'Run the entire pipeline inside a Docker container with a fresh repo clone')
-  .option('--repo <url>', 'Repository URL to clone inside the container (defaults to current repo origin)')
+  .option('--repo <url>', 'Repository URL to clone inside the container (also settable as REPO_URL in .env)')
   .option('--base-branch <branch>', 'Branch to checkout before starting inside the container')
   .option('--container-image <name>', 'Docker image name (default: robot-consortium)')
   .action(async (inlineDescription: string | undefined, options: StartOptions) => {
