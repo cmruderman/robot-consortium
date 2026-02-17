@@ -1,0 +1,42 @@
+{
+  "id": "rc-mlr8bwid-73kzqk",
+  "description": "Fix MCP OAuth for non-US tenants. Only US-hosted customers can successfully complete MCP OAuth (Cursor, Claude). Other regions (EU, EMEA) are broken. The issue is likely in the OAuth callback URL configuration or the MCP server's token exchange endpoint, which may be hardcoded to US endpoints. Investigate the OAuth flow, identify where region-specific URLs are used, and plan a fix that routes each tenant to their correct regional endpoint.",
+  "phase": "PLAN",
+  "createdAt": "2026-02-17T23:23:38.197Z",
+  "updatedAt": "2026-02-17T23:29:23.242Z",
+  "workingDirectory": "/work/repo",
+  "tasks": [],
+  "questions": {
+    "pending": [],
+    "answered": []
+  },
+  "costs": [],
+  "findings": [
+    "surfer-1-project-conventions.md",
+    "surfer-2-oauth-flow-implementation.md",
+    "surfer-3-region-endpoint-config.md",
+    "surfer-4-mcp-server-config.md"
+  ],
+  "plans": [
+    "city-planner-1-scope-assessment.md",
+    "city-planner-2-regional-config-design.md",
+    "city-planner-3-user-experience.md"
+  ],
+  "critiques": [],
+  "reviews": [],
+  "branchName": "feat/fix-mcp-oauth-for-non-us-tenants-only-us-robot-consortium",
+  "surferFocuses": [
+    "project-conventions: Extract project conventions from CLAUDE.md, .claude/commands/, config files",
+    "oauth-flow-implementation: Explore OAuth callback URLs, token exchange endpoints, and any authorization code flow handling in the codebase",
+    "region-endpoint-config: Search for hardcoded US-specific URLs, regional endpoint configuration, tenant region detection, and base URL construction",
+    "mcp-server-config: Investigate MCP server setup, transport configuration, SSE/streamable HTTP endpoints, and any server manifest or capability declarations"
+  ],
+  "conventions": "conventions.md",
+  "codePatterns": "code-patterns.md",
+  "plannerPerspectives": [
+    "scope-assessment: Determine whether the fix belongs in this repository or elsewhere, and if here, define the minimal viable change boundary — avoid over-engineering a solution for code that doesn't exist in this repo",
+    "regional-config-design: Design the mechanism for detecting tenant region and propagating the correct regional endpoint (e.g., ANTHROPIC_BASE_URL) through the container env-var pipeline in container.ts",
+    "user-experience: Focus on how region configuration should be exposed to the user — CLI flag, environment variable, auto-detection, or config file — and ensure non-US users have a clear, low-friction path to correct operation"
+  ],
+  "finalPlan": "final-plan.md"
+}
