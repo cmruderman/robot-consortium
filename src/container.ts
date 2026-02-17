@@ -226,6 +226,8 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
   // and a mounted file — never interpolated into the shell string.
   const innerScript = [
     'git config --global credential.helper "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f"',
+    'git config --global user.name "Robot Consortium"',
+    'git config --global user.email "robot-consortium@noreply.github.com"',
     'git clone ${CLONE_BRANCH:+--branch "$CLONE_BRANCH"} "$REPO_URL" /work/repo',
     'cd /work/repo',
     `rc start --file /work/description.md ${rcFlags.join(' ')}`,
@@ -260,10 +262,24 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
 
   console.log(chalk.dim('  Launching container...\n'));
 
-  // Spawn docker and stream output
+  // Spawn docker, stream output, and scan for PR URL
   return new Promise((resolve) => {
     const proc = spawn('docker', dockerArgs, {
-      stdio: ['ignore', 'inherit', 'inherit'],
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+
+    let prUrl: string | undefined;
+
+    // Relay stdout to host terminal and scan for PR URL
+    proc.stdout!.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      process.stdout.write(chunk);
+
+      // Scan for PR URL (gh pr create outputs the URL, and we also print it)
+      const prMatch = text.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
+      if (prMatch) {
+        prUrl = prMatch[0];
+      }
     });
 
     const cleanup = () => {
@@ -294,6 +310,9 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
           : exitCode === 127 ? ' (command not found in container)'
           : '';
         console.log(chalk.red(`\n  ✗ Container exited with code ${exitCode}${hint}`));
+      }
+      if (prUrl) {
+        console.log(chalk.bold.cyan(`\n  PR: ${prUrl}\n`));
       }
       resolve(exitCode);
     });
