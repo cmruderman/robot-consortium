@@ -1,0 +1,51 @@
+{
+  "id": "rc-mlr8bxff-5pgtup",
+  "description": "# Reports of unsuccessful Cursor MCP OAuth\n\n**Description**\n- _link to slack convo:_ https://exploreomni.slack.com/archives/C05377UA6LF/p1770915175088239\n\nCustomers have reported that they are unable to successfully use OAuth with Cursor's MCP Server using the provided Omni instructions. Docs have been pulled to reduce support burden, but the raw file is [here](https://github.com/exploreomni/mintlify-omni/pull/623/changes#diff-fa16e8ed071b8bc707494c66b9086ed93fe340c544a41697ee370b3072c06ec4).\n\nAttached is a video showing me successfully completing the setup using those instructions, and a screenshot confirming that the server is usable in chat.\n\nhttps://github.com/user-attachments/assets/10a51253-0c36-4eab-8920-e42a9d7c3528\n\nSuccessful use in chat - note that I did have to restart Cursor to get this to work. Initially the AI said something like \"I don't have access to the MCP tools\":\n\n<img width=\"1719\" height=\"1035\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/2933e755-bcf4-477a-9ec3-11189a3150b2\" />\n\nAnd in case it's relevant, the OAuth window never actually closed and continued to show an **Authorizing** status. Browser console showed an error, but again, not sure if it's actually related.\n\n<img width=\"1709\" height=\"954\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/e5efee6c-8739-471e-81dd-3f23e0b7b0aa\" />\n\n**Expected behavior**\n\n**Other considerations**\n- CC a team? @Dutchgoose @cmruderman \n- Is this a regression?\n\n**Reported by (one word, don't hyperlink)**\norg_name: \n\n\n**Labels:** bug, needs repro, auth, ai\n\n## Comments\n\n### github-actions\nSimilar Issues:\n- #42524\n\n### Dutchgoose\n@cmruderman @Dutchgoose tagging for visibility but going to unassign because hard to take action until we have a repro.\n\n### jacksweeney5\n@jonath0n are you able to dig into these? We've had some related MCP OAuth troubleshooting that we can't keep throwing Corey at for the moment but seem to be a bit beyond the normal scope of what SEs are familiar with at the moment.\n\nhttps://exploreomni.slack.com/archives/C05377UA6LF/p1770701394602299\nhttps://exploreomni.slack.com/archives/C05377UA6LF/p1770915175088239\n\n### jonath0n\nI replicated the customer's errors by walking through the OAuth workflow. but then restarted Cursor, and suddenly it started working. Seems that the Cursor agent cannot use the MCP until Cursor restarts, even though 1. The MCP Setting tool is all green and 2. this isn't required for API key auth.\n\nI've asked the customer to re-test, but this time restart Cursor after authorizing the MCP server.\n\nVideo below\nhttps://ro.am/share/gzybh4bb-vxnkupqp-afaac59h-a5dtdo9r\n\n### PMatth\n@jonath0n seems like the client still has the issue with Cursor and they have the same error for Dust AI: https://exploreomni.slack.com/archives/C090KKF9T9T/p1771320358153799?thread_ts=1770909138.052929&cid=C090KKF9T9T\n\n### jonath0n\nAfk at the moment but I'm wondering if this is an eu tenant thing. Multiple reports from EMEA customers of similar behavior across Claude and Cursor. I can set up repro when I'm at my computer in a couple hrs\n\n### jonath0n\noof, it's a tenant thing ie only US hosted customers seem to work for MCP, the other regions are broken.\n\nhttps://ro.am/share/eqnp2wx2-eel0v3h0-jvg70d3x-twdps1k5\n",
+  "phase": "PLAN",
+  "createdAt": "2026-02-17T23:23:39.387Z",
+  "updatedAt": "2026-02-17T23:32:37.785Z",
+  "workingDirectory": "/work/repo",
+  "tasks": [],
+  "questions": {
+    "pending": [],
+    "answered": []
+  },
+  "costs": [],
+  "findings": [
+    "surfer-1-project-conventions.md",
+    "surfer-2-mcp-oauth-implementation.md",
+    "surfer-3-multi-tenant-region-config.md",
+    "surfer-4-auth-token-lifecycle.md"
+  ],
+  "plans": [
+    "city-planner-1-oauth-diagnostics.md",
+    "city-planner-2-developer-experience.md",
+    "city-planner-3-upstream-integration.md"
+  ],
+  "critiques": [
+    "rat-1-overengineering-scope-creep.md",
+    "rat-2-speculative-assumptions.md",
+    "rat-3-missing-requirements.md"
+  ],
+  "reviews": [],
+  "branchName": "feat/reports-of-unsuccessful-cursor-mcp-oauth-robot-consortium",
+  "surferFocuses": [
+    "project-conventions: Extract project conventions from CLAUDE.md, .claude/commands/, config files",
+    "mcp-oauth-implementation: Explore any MCP server configuration, OAuth flow handling, token exchange endpoints, and authorization callback mechanisms",
+    "multi-tenant-region-config: Search for tenant configuration, region-specific URLs, base URL construction, and any hardcoded US-region endpoints that should be dynamic",
+    "auth-token-lifecycle: Investigate token storage, refresh, validation, and how auth state is managed across client restarts (relevant to the Cursor restart requirement)"
+  ],
+  "conventions": "conventions.md",
+  "codePatterns": "code-patterns.md",
+  "plannerPerspectives": [
+    "oauth-diagnostics: Focus on adding region-aware error messaging and diagnostic tooling to help users identify tenant/region OAuth misconfiguration",
+    "developer-experience: Focus on documenting known Cursor MCP OAuth issues, workarounds (restart requirement), and improving the setup guidance for non-US tenants",
+    "upstream-integration: Focus on what changes could be made to token resolution to support multi-region OAuth endpoints and detect region-specific failures gracefully"
+  ],
+  "ratFocuses": [
+    "overengineering-scope-creep: All plans add substantial infrastructure (test frameworks, new CLI commands, JWT parsing, region config) for a bug that lives upstream in the Omni MCP server and cannot be fixed from this repo",
+    "speculative-assumptions: Plans invent environment variables (OMNI_BASE_URL, OMNI_REGION) and token formats (JWT) with no evidence the upstream service would consume or produce them, risking user confusion and dead code",
+    "missing-requirements: None of the plans address the two concrete actionable items from the issue thread — the Cursor restart requirement is buried in dim hints rather than prominently surfaced, and no plan proposes actually reproducing the EU tenant failure to validate their diagnostic approach works"
+  ],
+  "finalPlan": "final-plan.md"
+}
