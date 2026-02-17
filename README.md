@@ -86,6 +86,10 @@ Shorthand: `rc` works the same as `robot-consortium`.
 | `--skip-ci` | Skip CI monitoring and auto-fix phase |
 | `--skip-rats` | Skip adversarial plan critique phase |
 | `--plan-only` | Run SURF and PLAN only — output a plan document, no code changes |
+| `--container` | Run the entire pipeline inside a Docker container (sandboxed) |
+| `--repo <url>` | Repository URL to clone inside the container (also settable as `REPO_URL` in `.env`) |
+| `--base-branch <branch>` | Branch to checkout before starting inside the container |
+| `--container-image <name>` | Docker image name (default: `robot-consortium`) |
 
 For `--issue`, you can provide just the number (`--issue 123`) or a full URL (`--issue https://github.com/owner/repo/issues/123`). Issue content includes title, body, labels, and comments.
 
@@ -101,7 +105,7 @@ Skip flags let you control which phases run. Useful during development or when y
 
 **`--plan-only`** — Runs SURF and PLAN (including Rats, unless `--skip-rats`) but stops before BUILD. Outputs a human-readable implementation plan document instead of a machine-parseable task list. No code changes are made. Use this when you want to research and plan before committing to implementation, or when you want to hand the plan to a developer.
 
-All flags work on both `start` and `resume`:
+All skip flags work on both `start` and `resume`:
 
 ```bash
 # Fast iteration: skip verification and CI, auto-proceed
@@ -116,6 +120,29 @@ rc start "Simple feature" --plan-only --skip-rats --yes
 # Resume and skip CI this time
 rc resume --skip-ci
 ```
+
+### Container Mode
+
+Run the entire pipeline inside a Docker container with a fresh repo clone. Agents get full autonomy (`--dangerously-skip-permissions`) in a sandboxed environment — nothing touches the host filesystem.
+
+```bash
+rc start "Add rate limiting" --container
+```
+
+Credentials are resolved from a `.env` file in the working directory:
+
+```
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+REPO_URL=https://github.com/org/repo
+```
+
+| Credential | Resolution order |
+|---|---|
+| Claude auth | `CLAUDE_CODE_OAUTH_TOKEN` > `ANTHROPIC_API_KEY` (env or `.env`) |
+| GitHub auth | `GH_TOKEN` (env or `.env`) > `gh auth token` |
+| Repo URL | `--repo` flag > `REPO_URL` in `.env` |
+
+Run `claude setup-token` to generate an OAuth token (Max/Pro plan, no API billing).
 
 ## How It Works
 
