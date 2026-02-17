@@ -40,8 +40,21 @@ const loadEnvFile = (workingDir: string): Record<string, string> => {
   return vars;
 };
 
-const resolveAnthropicKey = (envVars: Record<string, string>): string | undefined => {
-  return process.env.ANTHROPIC_API_KEY || envVars.ANTHROPIC_API_KEY || undefined;
+interface ClaudeAuth {
+  envVar: string;
+  value: string;
+}
+
+const resolveClaudeAuth = (envVars: Record<string, string>): ClaudeAuth | undefined => {
+  // Prefer OAuth token (Max/Pro plan — no API billing)
+  const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN || envVars.CLAUDE_CODE_OAUTH_TOKEN;
+  if (oauthToken) return { envVar: 'CLAUDE_CODE_OAUTH_TOKEN', value: oauthToken };
+
+  // Fall back to API key (pay-per-use)
+  const apiKey = process.env.ANTHROPIC_API_KEY || envVars.ANTHROPIC_API_KEY;
+  if (apiKey) return { envVar: 'ANTHROPIC_API_KEY', value: apiKey };
+
+  return undefined;
 };
 
 const resolveGhToken = (envVars: Record<string, string> = {}): string | undefined => {
@@ -128,10 +141,11 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
   const envVars = loadEnvFile(workingDir);
 
   // Resolve credentials
-  const anthropicKey = resolveAnthropicKey(envVars);
-  if (!anthropicKey) {
-    console.log(chalk.red('  ✗ ANTHROPIC_API_KEY not found'));
-    console.log(chalk.dim('  Set it via environment variable or in a .env file in your working directory'));
+  const claudeAuth = resolveClaudeAuth(envVars);
+  if (!claudeAuth) {
+    console.log(chalk.red('  ✗ Claude authentication not found'));
+    console.log(chalk.dim('  Set CLAUDE_CODE_OAUTH_TOKEN (Max/Pro plan) or ANTHROPIC_API_KEY (API billing)'));
+    console.log(chalk.dim('  in your environment or .env file. Run "claude setup-token" to generate an OAuth token.'));
     return 1;
   }
 
@@ -189,7 +203,7 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
   const dockerArgs: string[] = [
     'run',
     '--rm',
-    '-e', `ANTHROPIC_API_KEY=${anthropicKey}`,
+    '-e', `${claudeAuth.envVar}=${claudeAuth.value}`,
     '-e', `GH_TOKEN=${ghToken}`,
     '-e', 'CLAUDE_CODE_ACCEPT_TOS=yes',
     '--entrypoint', '/bin/bash',
