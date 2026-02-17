@@ -1,5 +1,12 @@
 node_modules/
 dist/
 .robot-consortium/
+.robot-consortium-learnings.md
 *.log
 .DS_Store
+
+# Credentials
+.env
+.env.local
+.env.*
+!.env.example
