@@ -1,6 +1,8 @@
 import { spawn, execSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import chalk from 'chalk';
 
 export interface ContainerOptions {
@@ -18,12 +20,40 @@ export interface ContainerOptions {
 
 const DEFAULT_IMAGE_NAME = 'robot-consortium';
 
+// Input validation to prevent shell injection
+const SAFE_BRANCH_RE = /^[a-zA-Z0-9._\/-]+$/;
+const SAFE_IMAGE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._\/-]*$/;
+
+const validateBranchName = (branch: string): void => {
+  if (!SAFE_BRANCH_RE.test(branch)) {
+    throw new Error(`Invalid branch name: ${branch}`);
+  }
+};
+
+const validateImageName = (name: string): void => {
+  if (!SAFE_IMAGE_RE.test(name)) {
+    throw new Error(`Invalid Docker image name: ${name}`);
+  }
+};
+
+const validateRepoUrl = (url: string): void => {
+  if (!/^https?:\/\//.test(url)) {
+    throw new Error(`Repository URL must use HTTPS: ${url}`);
+  }
+};
+
 const loadEnvFile = (workingDir: string): Record<string, string> => {
   const envPath = path.join(workingDir, '.env');
   if (!fs.existsSync(envPath)) return {};
 
+  let content: string;
+  try {
+    content = fs.readFileSync(envPath, 'utf-8');
+  } catch {
+    return {};
+  }
+
   const vars: Record<string, string> = {};
-  const content = fs.readFileSync(envPath, 'utf-8');
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
@@ -41,7 +71,7 @@ const loadEnvFile = (workingDir: string): Record<string, string> => {
 };
 
 interface ClaudeAuth {
-  envVar: string;
+  envVar: 'CLAUDE_CODE_OAUTH_TOKEN' | 'ANTHROPIC_API_KEY';
   value: string;
 }
 
@@ -94,14 +124,15 @@ const getRcProjectRoot = (): string => {
   // The RC project root is where the Dockerfile lives.
   // This file is at src/container.ts -> compiled to dist/container.js
   // So project root is one level up from dist/
-  return path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 };
 
 export const ensureImage = (imageName: string): void => {
+  validateImageName(imageName);
   const rcRoot = getRcProjectRoot();
 
   try {
-    const result = execSync(`docker images -q ${imageName}`, {
+    const result = execSync(`docker images -q '${imageName}'`, {
       encoding: 'utf-8',
     }).trim();
 
@@ -114,7 +145,7 @@ export const ensureImage = (imageName: string): void => {
   }
 
   console.log(chalk.dim(`  Building Docker image: ${imageName}...`));
-  execSync(`docker build -t ${imageName} .`, {
+  execSync(`docker build -t '${imageName}' .`, {
     cwd: rcRoot,
     stdio: 'inherit',
   });
@@ -165,6 +196,16 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
   }
   const repoUrl = convertToHttpsUrl(rawRepoUrl);
 
+  // Validate inputs before proceeding
+  try {
+    validateRepoUrl(repoUrl);
+    if (baseBranch) validateBranchName(baseBranch);
+    validateImageName(imageName);
+  } catch (error) {
+    console.log(chalk.red(`  ✗ ${error instanceof Error ? error.message : String(error)}`));
+    return 1;
+  }
+
   console.log(chalk.dim(`  Repo: ${repoUrl}`));
   console.log(chalk.dim(`  Base branch: ${baseBranch || 'default'}`));
   console.log(chalk.dim(`  Image: ${imageName}`));
@@ -173,12 +214,13 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
   try {
     ensureImage(imageName);
   } catch (error) {
-    console.log(chalk.red(`  ✗ Failed to build Docker image: ${(error as Error).message}`));
+    console.log(chalk.red(`  ✗ Failed to build Docker image: ${error instanceof Error ? error.message : String(error)}`));
     return 1;
   }
 
   // Build the shell script that runs inside the container
-  const cloneBranch = baseBranch ? `--branch ${baseBranch} ` : '';
+  // baseBranch and repoUrl are validated above — safe to interpolate with quotes
+  const cloneBranch = baseBranch ? `--branch '${baseBranch}' ` : '';
   const escapedDescription = description.replace(/'/g, "'\\''");
 
   // Build RC flags
@@ -193,19 +235,25 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
     // Configure git to use GH_TOKEN for HTTPS auth
     'git config --global credential.helper "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f"',
     // Clone the repo
-    `git clone ${cloneBranch}${repoUrl} /work/repo`,
+    `git clone ${cloneBranch}'${repoUrl}' /work/repo`,
     'cd /work/repo',
     // Run RC
     `rc start '${escapedDescription}' ${rcFlags.join(' ')}`,
   ].join(' && ');
 
+  // Write credentials to temp file for --env-file (avoids exposure in process table)
+  const envFile = path.join(os.tmpdir(), `rc-container-${Date.now()}.env`);
+  fs.writeFileSync(envFile, [
+    `${claudeAuth.envVar}=${claudeAuth.value}`,
+    `GH_TOKEN=${ghToken}`,
+    'CLAUDE_CODE_ACCEPT_TOS=yes',
+  ].join('\n'), { mode: 0o600 });
+
   // Build docker run args
   const dockerArgs: string[] = [
     'run',
     '--rm',
-    '-e', `${claudeAuth.envVar}=${claudeAuth.value}`,
-    '-e', `GH_TOKEN=${ghToken}`,
-    '-e', 'CLAUDE_CODE_ACCEPT_TOS=yes',
+    '--env-file', envFile,
     '--entrypoint', '/bin/bash',
     imageName,
     '-c', innerScript,
@@ -219,7 +267,21 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
       stdio: ['ignore', 'inherit', 'inherit'],
     });
 
+    const cleanup = () => {
+      try { fs.unlinkSync(envFile); } catch {}
+      process.removeListener('SIGINT', onSignal);
+      process.removeListener('SIGTERM', onSignal);
+    };
+
+    // Forward signals to the Docker process so Ctrl+C stops the container
+    const onSignal = (signal: NodeJS.Signals) => {
+      proc.kill(signal);
+    };
+    process.on('SIGINT', onSignal);
+    process.on('SIGTERM', onSignal);
+
     proc.on('close', (code) => {
+      cleanup();
       const exitCode = code ?? 1;
       if (exitCode === 0) {
         console.log(chalk.green('\n  ✓ Container completed successfully'));
@@ -230,6 +292,7 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
     });
 
     proc.on('error', (err) => {
+      cleanup();
       console.log(chalk.red(`  ✗ Failed to launch Docker: ${err.message}`));
       console.log(chalk.dim('  Is Docker installed and running?'));
       resolve(1);
