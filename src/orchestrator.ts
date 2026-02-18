@@ -1,6 +1,9 @@
 import * as readline from 'readline';
+import * as fs from 'fs';
+import * as path from 'path';
+import { execSync } from 'child_process';
 import chalk from 'chalk';
-import { loadState, updatePhase, getTotalCost, getStateDir } from './state.js';
+import { loadState, updatePhase, getTotalCost, getStateDir, saveState } from './state.js';
 import { runSurfPhase, runPlanPhase, runBuildPhase, runOinkPhase, runPRPhase, runCICheckPhase } from './phases/index.js';
 import { Phase } from './types.js';
 
@@ -165,10 +168,65 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
         }
 
         if (planOnly) {
-          // Plan-only mode: stop here, output the plan, and mark DONE
+          // Plan-only mode: commit plan files, push branch, open PR
           const stateDir = getStateDir(workingDir);
+          const state = loadState(workingDir)!;
+
+          // Read the final plan for the PR body
+          const finalPlanPath = path.join(stateDir, 'final-plan.md');
+          const finalPlan = fs.existsSync(finalPlanPath)
+            ? fs.readFileSync(finalPlanPath, 'utf-8')
+            : 'No plan document generated.';
+
+          // Commit plan files
+          try {
+            execSync('git add -f .robot-consortium/', { cwd: workingDir });
+            const commitDesc = state.description.split('\n')[0].slice(0, 60);
+            execSync(`git commit -m "docs: robot-consortium plan for ${commitDesc.replace(/"/g, '\\"')}"`, { cwd: workingDir });
+            console.log(chalk.green('  ✓ Plan files committed'));
+          } catch {
+            // Nothing to commit or not a git repo
+          }
+
+          // Push the branch
+          let pushed = false;
+          try {
+            const branchName = execSync('git branch --show-current', { cwd: workingDir, encoding: 'utf-8' }).trim();
+            execSync(`git push -u origin ${branchName}`, { cwd: workingDir, stdio: 'inherit' });
+            console.log(chalk.green('  ✓ Branch pushed'));
+            pushed = true;
+          } catch (error) {
+            console.log(chalk.yellow(`  ⚠ Could not push branch: ${error instanceof Error ? error.message : String(error)}`));
+          }
+
+          // Create PR
+          let prUrl: string | undefined;
+          if (pushed) {
+            try {
+              const titleDesc = state.description.split('\n')[0].slice(0, 60);
+              const prTitle = `[RC Plan] ${titleDesc}`;
+              const prBody = `> **Plan-only run** — no code changes. This PR contains the implementation plan for review.\n\n${finalPlan}`;
+              const bodyFile = path.join(stateDir, 'pr-body.md');
+              fs.writeFileSync(bodyFile, prBody);
+
+              const prResult = execSync(
+                `gh pr create --title "${prTitle.replace(/"/g, '\\"')}" --body-file "${bodyFile}"`,
+                { cwd: workingDir, encoding: 'utf-8' }
+              );
+              prUrl = prResult.trim();
+              state.prUrl = prUrl;
+              saveState(workingDir, state);
+              console.log(chalk.green(`  ✓ PR created: ${prUrl}`));
+            } catch (error) {
+              console.log(chalk.yellow(`  ⚠ Could not create PR: ${error instanceof Error ? error.message : String(error)}`));
+            }
+          }
+
           console.log(chalk.green('\n' + '═'.repeat(60)));
           console.log(chalk.bold.green('  ✓ PLAN COMPLETE'));
+          if (prUrl) {
+            console.log(chalk.bold(`    PR: ${prUrl}`));
+          }
           console.log(chalk.dim(`    Plan document: ${stateDir}/final-plan.md`));
           console.log(chalk.dim(`    Individual plans: ${stateDir}/plans/`));
           console.log(chalk.dim(`    Findings: ${stateDir}/findings/`));
