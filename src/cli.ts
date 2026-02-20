@@ -150,6 +150,7 @@ program
         skipCi: options.skipCi,
         skipRats: options.skipRats,
         planOnly: options.planOnly,
+        simple: options.simple,
       });
       process.exit(code);
     }
