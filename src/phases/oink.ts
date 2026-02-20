@@ -44,7 +44,7 @@ export const runOinkPhase = async (workingDir: string, phaseOptions: PhaseOption
 
   if (lintResult.success) {
     addReview(workingDir, 'pig-0-lint.md', lintResult.output);
-    const lintPassed = parseVerdict(lintResult.output);
+    const lintPassed = parseVerdict(lintResult.output, lintPig.id);
     if (!lintPassed) {
       console.log(chalk.yellow('  ⚠️  Lint pig found issues that need manual review'));
     } else {
@@ -62,13 +62,13 @@ export const runOinkPhase = async (workingDir: string, phaseOptions: PhaseOption
     createAgentConfig('pig', i + 1, checkType)
   );
 
-  // Build prompts for each pig
+  // Build prompts for each pig — tighter tool scoping per role
   const options = pigs.map((pig) => ({
     workingDir,
     prompt: buildPigPrompt(state.description, finalPlan, pig.focus!),
     allowedTools: pig.focus === 'tests'
-      ? ['Read', 'Glob', 'Grep', 'Bash(yarn test*)', 'Bash(npm test*)', 'Bash(yarn lint*)', 'Bash(npm run lint*)']
-      : ['Read', 'Glob', 'Grep', 'Bash(git diff*)'],
+      ? ['Read', 'Grep', 'Bash(yarn test*)', 'Bash(npm test*)', 'Bash(yarn lint*)', 'Bash(npm run lint*)']
+      : ['Read', 'Grep', 'Bash(git diff*)'],
   }));
 
   // Run pigs in parallel
@@ -91,7 +91,7 @@ export const runOinkPhase = async (workingDir: string, phaseOptions: PhaseOption
       addReview(workingDir, filename, result.output);
 
       // Parse verdict from output
-      const passed = parseVerdict(result.output);
+      const passed = parseVerdict(result.output, pig.id);
       verdicts.push({
         pig: pig.id,
         passed,
@@ -135,28 +135,26 @@ export const runOinkPhase = async (workingDir: string, phaseOptions: PhaseOption
   }
 };
 
-const parseVerdict = (output: string): boolean => {
+const parseVerdict = (output: string, pigId?: string): boolean => {
   const upperOutput = output.toUpperCase();
 
-  // Look for explicit PASS/FAIL at the start or in a verdict line
-  if (upperOutput.includes('VERDICT: PASS') || upperOutput.includes('# PASS')) {
-    return true;
-  }
-  if (upperOutput.includes('VERDICT: FAIL') || upperOutput.includes('# FAIL')) {
-    return false;
-  }
+  // Require explicit VERDICT: prefix to avoid matching "PASS" mentioned in test names or failure descriptions
+  if (upperOutput.includes('VERDICT: PASS')) return true;
+  if (upperOutput.includes('VERDICT: FAIL')) return false;
 
-  // Look for PASS/FAIL as standalone words near the top
-  const firstLines = output.split('\n').slice(0, 10).join('\n').toUpperCase();
-  if (firstLines.includes('PASS') && !firstLines.includes('FAIL')) {
-    return true;
-  }
-  if (firstLines.includes('FAIL')) {
-    return false;
-  }
+  // Accept # PASS / # FAIL as standalone header (common LLM output pattern)
+  if (/^#\s*PASS\s*$/m.test(upperOutput)) return true;
+  if (/^#\s*FAIL\s*$/m.test(upperOutput)) return false;
 
-  // Default to pass if unclear (optimistic)
-  return true;
+  // Fallback: PASS/FAIL as the very first word of the output
+  const firstWord = output.trim().toUpperCase().split(/\s+/)[0];
+  if (firstWord === 'PASS') return true;
+  if (firstWord === 'FAIL') return false;
+
+  // Ambiguous output — treat as FAIL and log so we can debug
+  console.log(chalk.yellow(`  ⚠ ${pigId ?? 'pig'}: could not parse VERDICT from output, treating as FAIL`));
+  console.log(chalk.dim(`  First 100 chars: ${output.slice(0, 100).replace(/\n/g, ' ')}`));
+  return false;
 };
 
 export const getReviews = (workingDir: string): string => {

@@ -4,7 +4,7 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { loadState, updatePhase, getTotalCost, getStateDir, saveState } from './state.js';
-import { runSurfPhase, runPlanPhase, runBuildPhase, runOinkPhase, runPRPhase, runCICheckPhase } from './phases/index.js';
+import { runSurfPhase, runPlanPhase, runBuildPhase, runOinkPhase, runPRPhase, runCICheckPhase, runSimpleMode } from './phases/index.js';
 import { Phase } from './types.js';
 
 let rl: readline.Interface | null = null;
@@ -48,6 +48,7 @@ export interface RunOptions {
   skipCi?: boolean;
   skipRats?: boolean;
   planOnly?: boolean;
+  simple?: boolean;
 }
 
 let verboseMode = false;
@@ -55,6 +56,7 @@ let skipOink = false;
 let skipCi = false;
 let skipRats = false;
 let planOnly = false;
+let simpleMode = false;
 
 export const runConsortium = async (workingDir: string, options: RunOptions = {}): Promise<void> => {
   autoYes = options.yes ?? false;
@@ -63,6 +65,7 @@ export const runConsortium = async (workingDir: string, options: RunOptions = {}
   skipCi = options.skipCi ?? false;
   skipRats = options.skipRats ?? false;
   planOnly = options.planOnly ?? false;
+  simpleMode = options.simple ?? false;
 
   const state = loadState(workingDir);
   if (!state) {
@@ -97,7 +100,10 @@ export const runConsortium = async (workingDir: string, options: RunOptions = {}
   if (planOnly) {
     console.log(chalk.yellow('   Mode: Plan Only (--plan-only)'));
   }
-  if (autoYes || verboseMode || skipOink || skipCi || skipRats || planOnly) {
+  if (simpleMode) {
+    console.log(chalk.yellow('   Mode: Simple / One-Shot (--simple)'));
+  }
+  if (autoYes || verboseMode || skipOink || skipCi || skipRats || planOnly || simpleMode) {
     console.log('');
   }
 
@@ -112,6 +118,22 @@ export const runConsortium = async (workingDir: string, options: RunOptions = {}
 };
 
 const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void> => {
+  // Simple/one-shot mode: skip SURF and PLAN entirely, single Dawg → OINK → PR
+  if (simpleMode && (startPhase === 'INIT' || startPhase === 'SURF' || startPhase === 'PLAN')) {
+    const state = loadState(workingDir);
+    if (!state) throw new Error('No consortium state found');
+
+    const simpleResult = await runSimpleMode(workingDir, { verbose: verboseMode });
+    if (!simpleResult.success) {
+      console.log(chalk.red('\n❌ Simple mode failed. Check .robot-consortium/failure-report.md for details.'));
+      return;
+    }
+
+    // Jump directly to OINK (skip SURF/PLAN/BUILD, those were all done by the single Dawg)
+    await runFromPhase(workingDir, skipOink ? 'PR' : 'OINK');
+    return;
+  }
+
   const phases: Phase[] = ['INIT', 'SURF', 'PLAN', 'BUILD', 'OINK', 'PR', 'CI_CHECK'];
   const startIndex = phases.indexOf(startPhase);
 
@@ -255,7 +277,11 @@ const runFromPhase = async (workingDir: string, startPhase: Phase): Promise<void
         const buildResult = await runBuildPhase(workingDir, { verbose: verboseMode });
 
         if (!buildResult.success) {
-          console.log(chalk.red('\n❌ BUILD phase failed. Please review errors and retry.'));
+          const failState = loadState(workingDir);
+          console.log(chalk.red('\n❌ BUILD phase failed. Check .robot-consortium/failure-report.md for details.'));
+          if (failState?.preBuildSha) {
+            console.log(chalk.dim(`   To revert: git reset --hard ${failState.preBuildSha}`));
+          }
           return;
         }
 

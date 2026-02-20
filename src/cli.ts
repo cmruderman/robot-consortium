@@ -26,6 +26,7 @@ interface StartOptions {
   skipCi?: boolean;
   skipRats?: boolean;
   planOnly?: boolean;
+  simple?: boolean;
   container?: boolean;
   repo?: string;
   baseBranch?: string;
@@ -115,6 +116,7 @@ program
   .option('--skip-ci', 'Skip the CI_CHECK phase')
   .option('--skip-rats', 'Skip the Rat challenge phase during planning')
   .option('--plan-only', 'Run SURF and PLAN phases only — output a plan document, no code changes')
+  .option('--simple', 'One-shot mode: skip SURF/PLAN, single agent implements directly (best for small tasks)')
   .option('--container', 'Run the entire pipeline inside a Docker container with a fresh repo clone')
   .option('--repo <url>', 'Repository URL to clone inside the container (also settable as REPO_URL in .env)')
   .option('--base-branch <branch>', 'Branch to checkout before starting inside the container')
@@ -241,6 +243,7 @@ program
       skipCi: options.skipCi,
       skipRats: options.skipRats,
       planOnly: options.planOnly,
+      simple: options.simple,
     });
   });
 
@@ -254,7 +257,8 @@ program
   .option('--skip-ci', 'Skip the CI_CHECK phase')
   .option('--skip-rats', 'Skip the Rat challenge phase during planning')
   .option('--plan-only', 'Run SURF and PLAN phases only — output a plan document, no code changes')
-  .action(async (options: { directory?: string; yes?: boolean; verbose?: boolean; skipOink?: boolean; skipCi?: boolean; skipRats?: boolean; planOnly?: boolean }) => {
+  .option('--simple', 'One-shot mode: skip SURF/PLAN, single agent implements directly (best for small tasks)')
+  .action(async (options: { directory?: string; yes?: boolean; verbose?: boolean; skipOink?: boolean; skipCi?: boolean; skipRats?: boolean; planOnly?: boolean; simple?: boolean }) => {
     const workingDir = options.directory || process.cwd();
 
     const state = loadState(workingDir);
@@ -282,6 +286,7 @@ program
       skipCi: options.skipCi,
       skipRats: options.skipRats,
       planOnly: options.planOnly,
+      simple: options.simple,
     });
   });
 

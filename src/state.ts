@@ -73,13 +73,13 @@ export const updatePhase = (workingDir: string, phase: Phase): ConsortiumState =
   return state;
 };
 
-export const addTask = (workingDir: string, task: Omit<Task, 'id'>): Task => {
+export const addTask = (workingDir: string, task: Omit<Task, 'id'>, customId?: string): Task => {
   const state = loadState(workingDir);
   if (!state) throw new Error('No active consortium found');
 
   const newTask: Task = {
     ...task,
-    id: `task-${state.tasks.length + 1}`,
+    id: customId ?? `task-${state.tasks.length + 1}`,
   };
 
   state.tasks.push(newTask);
@@ -251,6 +251,11 @@ export const getCodePatterns = (workingDir: string): string => {
   const patternsPath = path.join(getStateDir(workingDir), state.codePatterns);
   if (!fs.existsSync(patternsPath)) return '';
   return fs.readFileSync(patternsPath, 'utf-8');
+};
+
+export const writeFailureReport = (workingDir: string, report: string): void => {
+  const stateDir = getStateDir(workingDir);
+  fs.writeFileSync(path.join(stateDir, 'failure-report.md'), report);
 };
 
 export const getTotalCost = (workingDir: string): number => {

@@ -4,8 +4,10 @@ import { PhaseOptions } from '../types.js';
 import { loadState, saveState, updatePhase } from '../state.js';
 import { createAgentConfig, runAgent, buildCIFixPrompt } from '../agents.js';
 
-const CI_WAIT_MINUTES = 15;
 const MAX_CI_ATTEMPTS = 3;
+// Poll intervals in minutes: start fast, back off, then hold steady
+const CI_POLL_INTERVALS = [2, 3, 5, 5, 10, 10, 10];
+const CI_MAX_WAIT_MINUTES = 45;
 
 export interface CICheckResult {
   success: boolean;
@@ -38,13 +40,9 @@ export const runCICheckPhase = async (workingDir: string, phaseOptions: PhaseOpt
     return { success: true, ciPassed: false, needsRetry: false };
   }
 
-  // Wait for CI to run
-  console.log(chalk.dim(`  Waiting ${CI_WAIT_MINUTES} minutes for CI to complete...`));
-  await waitMinutes(CI_WAIT_MINUTES);
-
-  // Check CI status
-  console.log(chalk.dim('  Checking CI status...'));
-  const ciStatus = await checkCIStatus(workingDir, state.prNumber);
+  // Poll CI with exponential backoff instead of a fixed wait
+  console.log(chalk.dim(`  Polling CI (intervals: ${CI_POLL_INTERVALS.join(', ')}m, max ${CI_MAX_WAIT_MINUTES}m)...`));
+  const ciStatus = await pollCIWithBackoff(workingDir, state.prNumber);
 
   if (ciStatus.status === 'success') {
     console.log(chalk.green('  ✓ CI passed!'));
@@ -52,22 +50,8 @@ export const runCICheckPhase = async (workingDir: string, phaseOptions: PhaseOpt
   }
 
   if (ciStatus.status === 'pending') {
-    console.log(chalk.yellow('  ⏳ CI still running, waiting another 5 minutes...'));
-    await waitMinutes(5);
-
-    const retryStatus = await checkCIStatus(workingDir, state.prNumber);
-    if (retryStatus.status === 'success') {
-      console.log(chalk.green('  ✓ CI passed!'));
-      return { success: true, ciPassed: true, needsRetry: false };
-    }
-
-    if (retryStatus.status === 'pending') {
-      console.log(chalk.yellow('  ⏳ CI still running. Will check again on resume.'));
-      return { success: true, ciPassed: false, needsRetry: true };
-    }
-
-    ciStatus.status = retryStatus.status;
-    ciStatus.details = retryStatus.details;
+    console.log(chalk.yellow(`  ⏳ CI still running after ${CI_MAX_WAIT_MINUTES}m. Will check again on resume.`));
+    return { success: true, ciPassed: false, needsRetry: true };
   }
 
   // CI failed - analyze and fix
@@ -118,6 +102,25 @@ export const runCICheckPhase = async (workingDir: string, phaseOptions: PhaseOpt
     console.log(chalk.red(`  ✗ Failed to commit fixes: ${(error as Error).message}`));
     return { success: false, ciPassed: false, needsRetry: false, error: (error as Error).message };
   }
+};
+
+const pollCIWithBackoff = async (workingDir: string, prNumber: number): Promise<CIStatus> => {
+  let totalWaited = 0;
+
+  for (const intervalMinutes of CI_POLL_INTERVALS) {
+    if (totalWaited >= CI_MAX_WAIT_MINUTES) break;
+
+    console.log(chalk.dim(`  Waiting ${intervalMinutes}m before next CI check...`));
+    await waitMinutes(intervalMinutes);
+    totalWaited += intervalMinutes;
+
+    const status = await checkCIStatus(workingDir, prNumber);
+    console.log(chalk.dim(`  CI status after ${totalWaited}m: ${status.status}`));
+
+    if (status.status !== 'pending') return status;
+  }
+
+  return { status: 'pending', details: `Still pending after ${totalWaited}m` };
 };
 
 const waitMinutes = (minutes: number): Promise<void> => {
