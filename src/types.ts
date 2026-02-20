@@ -73,6 +73,7 @@ export interface ConsortiumState {
   ratFocuses?: string[];
   conventions?: string;
   codePatterns?: string;
+  preBuildSha?: string;
 }
 
 export const AGENT_MODELS: Record<AgentRole, Model> = {

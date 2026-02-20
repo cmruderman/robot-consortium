@@ -1,10 +1,13 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
-import { loadState, updatePhase, addTask, updateTask } from '../state.js';
+import { loadState, saveState, updatePhase, addTask, updateTask, getStateDir, writeFailureReport } from '../state.js';
 import { createAgentConfig, runAgent, runAgentsInParallel, buildDawgPrompt, buildTestDawgPrompt, buildTaskVerificationPrompt } from '../agents.js';
 import { PhaseDisplay } from '../display.js';
 import { getFinalPlan } from './plan.js';
-import { getSurfConventions, getSurfCodePatterns } from './surf.js';
+import { getSurfCodePatterns, getFilteredConventions } from './surf.js';
 
 interface BuildTask {
   id: string;
@@ -15,6 +18,25 @@ interface BuildTask {
 }
 
 const MAX_VERIFICATION_ATTEMPTS = 2;
+
+/**
+ * Deterministic TypeScript type check — runs after each Dawg task before the
+ * verification pig. Catches type errors immediately while the Dawg's context
+ * is still warm, without spending any LLM tokens.
+ */
+const runTypeCheck = (workingDir: string): { passed: boolean; errors: string } => {
+  try {
+    if (!fs.existsSync(path.join(workingDir, 'tsconfig.json'))) {
+      return { passed: true, errors: '' };
+    }
+    execSync('npx tsc --noEmit', { cwd: workingDir, encoding: 'utf-8', timeout: 60000 });
+    return { passed: true, errors: '' };
+  } catch (error: unknown) {
+    const err = error as { stdout?: string; stderr?: string; message?: string };
+    const output = (err.stdout || err.stderr || err.message || '').toString();
+    return { passed: false, errors: output.slice(0, 3000) };
+  }
+};
 
 export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptions = {}): Promise<{ success: boolean; questions?: string[] }> => {
   console.log(chalk.cyan('\n🔨 PHASE 3: BUILD'));
@@ -27,8 +49,17 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
 
   updatePhase(workingDir, 'BUILD');
 
+  // Capture pre-build git SHA so we can offer a clean rollback if BUILD fails
+  try {
+    const sha = execSync('git rev-parse HEAD', { cwd: workingDir, encoding: 'utf-8' }).trim();
+    state.preBuildSha = sha;
+    saveState(workingDir, state);
+  } catch { /* not a git repo */ }
+
   const finalPlan = getFinalPlan(workingDir);
-  const conventions = getSurfConventions(workingDir) || undefined;
+  // Context scoping: give each role only the conventions sections it needs
+  const testConventions = getFilteredConventions(workingDir, ['Testing', 'Code Style']) || undefined;
+  const implConventions = getFilteredConventions(workingDir, ['Testing', 'Code Style', 'Build', 'Project-Specific']) || undefined;
   const codePatterns = getSurfCodePatterns(workingDir) || undefined;
 
   // Extract tasks from plan — now categorized as test vs implementation
@@ -49,30 +80,14 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
 
   console.log(chalk.dim(`  Found ${testTasks.length} test task(s) and ${implTasks.length} implementation task(s)\n`));
 
-  // Create task records in state — remap IDs to match state-generated IDs
-  const idMap: Record<string, string> = {};
+  // Create task records in state using the LLM-generated IDs directly (no remapping needed)
   for (const task of tasks) {
-    const stateTask = addTask(workingDir, {
+    addTask(workingDir, {
       description: task.description,
       status: 'pending',
       blockedBy: task.dependencies,
       taskType: task.taskType,
-    });
-    idMap[task.id] = stateTask.id;
-  }
-  // Remap all local IDs to match state
-  for (const task of tasks) {
-    task.id = idMap[task.id] || task.id;
-    task.dependencies = task.dependencies.map(d => idMap[d] || d);
-    if (task.testTaskIds) {
-      task.testTaskIds = task.testTaskIds.map(id => idMap[id] || id);
-    }
-  }
-  // Fix blockedBy in state (was stored with LLM IDs)
-  for (const task of tasks) {
-    if (task.dependencies.length > 0) {
-      updateTask(workingDir, task.id, { blockedBy: task.dependencies });
-    }
+    }, task.id);
   }
 
   const questions: string[] = [];
@@ -93,10 +108,10 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
         state.description,
         finalPlan,
         task.description,
-        conventions,
+        testConventions,
         codePatterns
       ),
-      allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash(yarn*)', 'Bash(npm*)', 'Bash(git diff*)'],
+      allowedTools: ['Read', 'Write', 'Edit', 'Grep', 'Bash(yarn*)', 'Bash(npm*)'],
     }));
 
     const testResults = await runAgentsInParallel(testDawgs, testOptions, {
@@ -179,11 +194,11 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
           state.description,
           finalPlan,
           task.description,
-          conventions,
+          implConventions,
           codePatterns,
           testFiles
         ),
-        allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash(yarn*)', 'Bash(npm*)', 'Bash(git diff*)'],
+        allowedTools: ['Read', 'Write', 'Edit', 'Grep', 'Bash(yarn*)', 'Bash(npm*)'],
         verbose: phaseOptions.verbose,
         quiet: !!display,
       });
@@ -198,6 +213,21 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
       if (result.output.includes('QUESTION:')) {
         const match = result.output.match(/QUESTION:\s*(.+?)(?:\n|$)/i);
         if (match) taskQuestions.push(`[${dawg.id}] ${match[1]}`);
+      }
+
+      // Deterministic type check — no LLM, instant feedback on TS errors
+      if (display) {
+        display.updateStatus(task.id, 'type-checking');
+      }
+      const typeCheck = runTypeCheck(workingDir);
+      if (!typeCheck.passed && attempt < MAX_VERIFICATION_ATTEMPTS) {
+        if (!display) {
+          console.log(chalk.yellow(`  [${dawg.id}] TypeScript errors detected — retrying`));
+        }
+        const baseDescription = task.description.split('\n\nPREVIOUS ATTEMPT FAILED')[0];
+        task.description = `${baseDescription}\n\nPREVIOUS ATTEMPT FAILED. TypeScript errors to fix:\n${typeCheck.errors}\n\nFix these type errors and try again.`;
+        updateTask(workingDir, task.id, { verificationAttempts: attempt + 1 });
+        continue;
       }
 
       // Per-task verification: only if we have test files
@@ -218,7 +248,7 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
       const verifyResult = await runAgent(verifyPig, {
         workingDir,
         prompt: buildTaskVerificationPrompt(task.description, 'Run the relevant tests and report results.', testFiles),
-        allowedTools: ['Bash(yarn*)', 'Bash(npm*)', 'Read', 'Glob', 'Grep'],
+        allowedTools: ['Bash(yarn*)', 'Bash(npm*)', 'Read', 'Grep'],
         verbose: phaseOptions.verbose,
         quiet: !!display,
       });
@@ -338,6 +368,33 @@ export const runBuildPhase = async (workingDir: string, phaseOptions: PhaseOptio
 
   if (failedTasks.length > 0) {
     console.log(chalk.red(`\n  ${failedTasks.length} task(s) failed. Surface to user.`));
+
+    // Write a structured failure report for easy diagnosis
+    const finalState = loadState(workingDir);
+    const stateDir = getStateDir(workingDir);
+    const reportLines = [
+      '# BUILD Failure Report',
+      '',
+      `**Task**: ${state.description.slice(0, 100)}`,
+      `**Failed tasks**: ${failedTasks.join(', ')}`,
+      '',
+      '## Failed Task Details',
+    ];
+    for (const taskId of failedTasks) {
+      const t = finalState?.tasks.find(t => t.id === taskId);
+      if (t) {
+        reportLines.push(`\n### ${t.id}: ${t.description.slice(0, 80)}`);
+        if (t.error) reportLines.push(`**Error**: ${t.error}`);
+        if (t.verificationAttempts) reportLines.push(`**Verification attempts**: ${t.verificationAttempts}`);
+      }
+    }
+    if (state.preBuildSha) {
+      reportLines.push('', '## Rollback', `To revert to pre-BUILD state: \`git reset --hard ${state.preBuildSha}\``);
+    }
+    reportLines.push('', `## Full state`, `See ${stateDir}/state.json`);
+    writeFailureReport(workingDir, reportLines.join('\n'));
+    console.log(chalk.dim(`  Failure report written to ${stateDir}/failure-report.md`));
+
     return { success: false };
   }
 
@@ -397,12 +454,15 @@ Example:
 
   try {
     const jsonMatch = result.output.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+    if (!jsonMatch) {
+      console.log(chalk.yellow('  ⚠ Robot King returned no JSON array — could not extract tasks'));
+      console.log(chalk.dim(`  Got: ${result.output.slice(0, 300)}...`));
+      return [];
     }
-    return [];
-  } catch {
-    console.log(chalk.yellow('  Could not parse tasks from plan, treating as single task'));
+    return JSON.parse(jsonMatch[0]);
+  } catch (err) {
+    console.log(chalk.yellow(`  ⚠ Task JSON parse failed: ${(err as Error).message}`));
+    console.log(chalk.dim(`  Raw: ${result.output.slice(0, 300)}...`));
     return [];
   }
 };

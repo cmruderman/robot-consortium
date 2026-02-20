@@ -1,6 +1,7 @@
-export { runSurfPhase, getSurfFindings, getSurfConventions, getSurfCodePatterns } from './surf.js';
+export { runSurfPhase, getSurfFindings, getSurfConventions, getSurfCodePatterns, getFilteredConventions } from './surf.js';
 export { runPlanPhase, getPlans, getFinalPlan } from './plan.js';
 export { runBuildPhase } from './build.js';
 export { runOinkPhase, getReviews } from './oink.js';
 export { runPRPhase } from './pr.js';
 export { runCICheckPhase } from './ci-check.js';
+export { runSimpleMode } from './simple.js';

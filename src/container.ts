@@ -16,6 +16,7 @@ export interface ContainerOptions {
   skipCi?: boolean;
   skipRats?: boolean;
   planOnly?: boolean;
+  simple?: boolean;
 }
 
 const DEFAULT_IMAGE_NAME = 'robot-consortium';
@@ -219,6 +220,7 @@ export const runInContainer = async (options: ContainerOptions): Promise<number>
     ['--skip-ci', options.skipCi],
     ['--skip-rats', options.skipRats],
     ['--plan-only', options.planOnly],
+    ['--simple', options.simple],
   ];
   const rcFlags = ['--yes', ...flagMap.filter(([, v]) => v).map(([k]) => k)];
 

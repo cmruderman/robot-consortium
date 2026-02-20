@@ -43,6 +43,47 @@ const MODEL_MAP: Record<Model, string> = {
   haiku: 'haiku',
 };
 
+// Per-model timeout in ms: Opus gets 12 min, Sonnet 6 min, Haiku 3 min
+const MODEL_TIMEOUTS: Record<Model, number> = {
+  opus: 12 * 60 * 1000,
+  sonnet: 6 * 60 * 1000,
+  haiku: 3 * 60 * 1000,
+};
+
+/**
+ * Parse conventions markdown into sections keyed by header text.
+ * Returns filtered content containing only the requested sections.
+ * If no sections match, returns the full conventions string.
+ */
+export const filterConventionsSections = (conventions: string, include: string[]): string => {
+  if (!conventions || include.length === 0) return conventions;
+
+  const sections: Record<string, string[]> = {};
+  let currentHeader = '__preamble__';
+  const lines = conventions.split('\n');
+
+  for (const line of lines) {
+    if (line.startsWith('## ')) {
+      currentHeader = line.slice(3).trim();
+      sections[currentHeader] = [line];
+    } else {
+      if (!sections[currentHeader]) sections[currentHeader] = [];
+      sections[currentHeader].push(line);
+    }
+  }
+
+  const matched: string[] = [];
+  for (const key of include) {
+    const entry = Object.entries(sections).find(([header]) =>
+      header.toLowerCase().includes(key.toLowerCase()) ||
+      key.toLowerCase().includes(header.toLowerCase())
+    );
+    if (entry) matched.push(entry[1].join('\n'));
+  }
+
+  return matched.length > 0 ? matched.join('\n\n') : conventions;
+};
+
 export const createAgentConfig = (role: AgentRole, index: number, focus?: string): AgentConfig => {
   return {
     role,
@@ -87,11 +128,31 @@ export const runAgent = async (
     let errorOutput = '';
     let lastProgressUpdate = Date.now();
     const PROGRESS_INTERVAL = 15000;
+    let resolved = false;
 
     const proc = spawn('claude', args, {
       cwd: workingDir,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // Hard timeout: kill agent if it runs too long
+    const agentTimeout = setTimeout(() => {
+      if (!resolved) {
+        proc.kill('SIGTERM');
+        const timeoutMin = MODEL_TIMEOUTS[agent.model] / 60000;
+        if (display) {
+          display.markFailed(agent.id, `timed out after ${timeoutMin}m`);
+        } else if (!quiet) {
+          console.log(chalk.red(`  [${agent.id}] Timed out after ${timeoutMin} minutes`));
+        }
+        resolved = true;
+        resolve({
+          success: false,
+          output: output.trim(),
+          error: `Agent timed out after ${timeoutMin} minutes`,
+        });
+      }
+    }, MODEL_TIMEOUTS[agent.model]);
 
     // Progress update interval — only for solo agents (display handles its own timing)
     const progressInterval = !display && !quiet
@@ -132,6 +193,9 @@ export const runAgent = async (
 
     proc.on('close', (code) => {
       if (progressInterval) clearInterval(progressInterval);
+      clearTimeout(agentTimeout);
+      if (resolved) return;
+      resolved = true;
       const elapsed = Date.now() - startTime;
 
       if (code === 0) {
@@ -162,6 +226,9 @@ export const runAgent = async (
 
     proc.on('error', (err) => {
       if (progressInterval) clearInterval(progressInterval);
+      clearTimeout(agentTimeout);
+      if (resolved) return;
+      resolved = true;
       if (display) {
         display.markFailed(agent.id, err.message);
       } else if (!quiet) {

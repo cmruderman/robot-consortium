@@ -1,11 +1,41 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { PhaseOptions } from '../types.js';
 import { loadState, updatePhase, addFinding, getStateDir, setSurferFocuses, setConventions, setCodePatterns, getConventions, getCodePatterns } from '../state.js';
-import { createAgentConfig, runAgentsInParallel, runAgent, buildSurferPrompt, buildSurferAnalysisPrompt, buildConventionsSurferPrompt } from '../agents.js';
+import { createAgentConfig, runAgentsInParallel, runAgent, buildSurferPrompt, buildSurferAnalysisPrompt, buildConventionsSurferPrompt, filterConventionsSections } from '../agents.js';
 
 const CONVENTIONS_FOCUS = 'project-conventions: Extract project conventions from CLAUDE.md, .claude/commands/, config files';
+
+/**
+ * Deterministically collect basic repo context before agents start.
+ * This saves surfers from spending tool calls on orientation tasks.
+ */
+const collectPreHydrationContext = (workingDir: string): string => {
+  const parts: string[] = [];
+
+  try {
+    const log = execSync('git log --oneline -20', { cwd: workingDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+    if (log) parts.push(`## Recent Git History\n\`\`\`\n${log}\n\`\`\``);
+  } catch { /* not a git repo or no commits */ }
+
+  try {
+    const changed = execSync('git diff HEAD~5 --name-only', { cwd: workingDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+    if (changed) parts.push(`## Recently Changed Files (last 5 commits)\n\`\`\`\n${changed}\n\`\`\``);
+  } catch { /* ignore */ }
+
+  try {
+    const tsFiles = execSync(
+      'find . -type f \\( -name "*.ts" -o -name "*.tsx" \\) -not -path "*/node_modules/*" -not -path "*/.robot-consortium/*" -not -path "*/dist/*" -not -path "*/.next/*" | sort | head -60',
+      { cwd: workingDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }
+    ).trim();
+    if (tsFiles) parts.push(`## TypeScript Source Files\n\`\`\`\n${tsFiles}\n\`\`\``);
+  } catch { /* not a TS project */ }
+
+  if (parts.length === 0) return '';
+  return `# Repository Context (pre-collected)\n\n${parts.join('\n\n')}\n\n---`;
+};
 
 const DEFAULT_FOCUSES = [
   'existing-patterns: existing patterns and conventions in the codebase',
@@ -41,17 +71,27 @@ export const runSurfPhase = async (workingDir: string, phaseOptions: PhaseOption
 
   console.log(chalk.dim(`\n  Deploying ${allFocuses.length} Surfer(s)...\n`));
 
+  // Collect pre-hydration context deterministically before agents start
+  const preContext = collectPreHydrationContext(workingDir);
+  if (preContext) {
+    console.log(chalk.dim('  Pre-hydration context collected (git history, file structure)\n'));
+  }
+
   // Create surfer agents with dynamic focuses
   const surfers = allFocuses.map((focus, i) => createAgentConfig('surfer', i + 1, focus));
 
   // Build prompts — conventions surfer gets a special prompt, others get the structured prompt
-  const options = surfers.map((surfer, i) => ({
-    workingDir,
-    prompt: i === 0
+  // Pre-hydration context is prepended to give surfers orientation without spending tool calls
+  const options = surfers.map((surfer, i) => {
+    const basePrompt = i === 0
       ? buildConventionsSurferPrompt(state.description)
-      : buildSurferPrompt(state.description, surfer.focus!),
-    allowedTools: ['Read', 'Glob', 'Grep', 'Bash(git log*)', 'Bash(git show*)'],
-  }));
+      : buildSurferPrompt(state.description, surfer.focus!);
+    return {
+      workingDir,
+      prompt: preContext ? `${preContext}\n\n${basePrompt}` : basePrompt,
+      allowedTools: ['Read', 'Glob', 'Grep', 'Bash(git log*)', 'Bash(git show*)'],
+    };
+  });
 
   // Run surfers in parallel
   const results = await runAgentsInParallel(surfers, options, {
@@ -144,7 +184,8 @@ const analyzeSurferNeeds = async (
   const focuses = parseSurferFocuses(result.output);
 
   if (focuses.length === 0) {
-    console.log(chalk.yellow('  ⚠ Could not parse focuses, using defaults'));
+    console.log(chalk.yellow('  ⚠ Could not parse surfer focuses from Robot King output — using defaults'));
+    console.log(chalk.dim(`  Expected SURFER_FOCUSES:...END_FOCUSES block. Got: ${result.output.slice(0, 200)}...`));
     return DEFAULT_FOCUSES;
   }
 
@@ -208,4 +249,8 @@ export const getSurfConventions = (workingDir: string): string => {
 
 export const getSurfCodePatterns = (workingDir: string): string => {
   return getCodePatterns(workingDir);
+};
+
+export const getFilteredConventions = (workingDir: string, sections: string[]): string => {
+  return filterConventionsSections(getConventions(workingDir), sections);
 };
