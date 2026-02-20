@@ -52,6 +52,9 @@ rc start "Fix login bug" --branch fix/login-bug
 # Use current branch (skip branch creation)
 rc start "Fix login bug" --no-branch
 
+# One-shot mode for simple tasks (skips SURF/PLAN)
+rc start "Fix the typo in the error message" --simple
+
 # Auto-proceed through checkpoints
 rc start "Add feature" --yes
 
@@ -86,6 +89,7 @@ Shorthand: `rc` works the same as `robot-consortium`.
 | `--skip-ci` | Skip CI monitoring and auto-fix phase |
 | `--skip-rats` | Skip adversarial plan critique phase |
 | `--plan-only` | Run SURF and PLAN only — output a plan document, no code changes |
+| `--simple` | One-shot mode — skip SURF/PLAN, single agent implements directly (best for small tasks) |
 | `--container` | Run the entire pipeline inside a Docker container (sandboxed) |
 | `--repo <url>` | Repository URL to clone inside the container (also settable as `REPO_URL` in `.env`) |
 | `--base-branch <branch>` | Branch to checkout before starting inside the container |
@@ -105,9 +109,14 @@ Skip flags let you control which phases run. Useful during development or when y
 
 **`--plan-only`** — Runs SURF and PLAN (including Rats, unless `--skip-rats`) but stops before BUILD. Outputs a human-readable implementation plan document instead of a machine-parseable task list. No code changes are made. Use this when you want to research and plan before committing to implementation, or when you want to hand the plan to a developer.
 
+**`--simple`** — Skips SURF and PLAN entirely. A single Opus agent gets the task description and pre-collected repo context (git history, file structure, CLAUDE.md), then implements directly. No exploration, no planning, no multi-agent coordination. Use this for small, self-contained changes where the overhead of the full pipeline isn't worth it — typos, config changes, small bug fixes. Goes straight to OINK and PR.
+
 All skip flags work on both `start` and `resume`:
 
 ```bash
+# One-shot for small tasks
+rc start "Fix the typo in the error message" --simple
+
 # Fast iteration: skip verification and CI, auto-proceed
 rc start "Quick fix" --skip-oink --skip-ci --yes
 
@@ -150,17 +159,21 @@ The pipeline runs six phases in sequence. Each phase uses specialized agents wor
 
 ```
 SURF ──▶ PLAN ──▶ BUILD ──▶ OINK ──▶ PR ──▶ CI_CHECK ──▶ DONE
-           │  │              │                    │
-           │  │ --skip-rats  │ --skip-oink        │ --skip-ci
-           │  │ skips rats   │ skips to PR         │ skips to DONE
-           │  │ within PLAN  │                     │
-           │
-           └──▶ DONE  (--plan-only: outputs plan document, no code changes)
+  ▲         │  │              │                    │
+  │         │  │ --skip-rats  │ --skip-oink        │ --skip-ci
+  │         │  │ skips rats   │ skips to PR        │ skips to DONE
+  │         │  │ within PLAN  │
+  │         │
+  │         └──▶ DONE  (--plan-only: outputs plan document, no code changes)
+  │
+  └── skipped by --simple (single agent runs directly into BUILD → OINK → PR)
 ```
 
 ### Phase 1: SURF — Explore the codebase
 
-Robot King analyzes the task and decides what to explore (2-5 focus areas like "api-patterns", "test-infrastructure", "similar-features"). A mandatory conventions surfer always runs first — it reads CLAUDE.md, `.claude/commands/`, config files (tsconfig, eslint, prettier, package.json) to extract project rules that all downstream agents must follow.
+Before surfers launch, basic repo context is collected deterministically: recent git history, recently changed files, and the source file tree. This is injected into every surfer prompt so they can orient instantly without spending tool calls on discovery.
+
+Robot King then analyzes the task and decides what to explore (2-5 focus areas like "api-patterns", "test-infrastructure", "similar-features"). A mandatory conventions surfer always runs first — it reads CLAUDE.md, `.claude/commands/`, config files (tsconfig, eslint, prettier, package.json) to extract project rules that all downstream agents must follow.
 
 Surfers explore in parallel and produce structured findings: actual code blocks with file paths and line numbers, not prose summaries. This gives planners and implementers concrete patterns to reference.
 
@@ -187,7 +200,9 @@ The plan gets broken into test tasks and implementation tasks.
 
 **Stage 2: Implementation.** Impl Dawgs write code to make the tests pass. They receive the project conventions, code patterns from SURF, and the test files from Stage 1. Independent tasks run in parallel with a live progress display showing each task's status (implementing → verifying → done). Dependent tasks run sequentially.
 
-**Per-task verification:** After each implementation task finishes, a verification agent runs the relevant tests. If tests fail, the feedback is sent back to the implementer for a retry (up to 2 attempts). This catches issues immediately instead of waiting for the final sweep.
+**Per-task verification:** After each implementation task finishes, a TypeScript type check runs deterministically (`tsc --noEmit`) — no LLM, instant feedback. If type errors are found, they're fed back to the Dawg immediately for a fix. Then a verification agent runs the relevant tests. If tests fail, the feedback is sent back for a retry (up to 2 attempts). This catches issues immediately instead of waiting for the final sweep.
+
+Each agent receives only the convention sections relevant to its role — test dawgs get testing and code style rules, not backend config or git workflow conventions. This keeps prompts focused and reduces noise.
 
 **Output:** Code changes written directly to the repo.
 
@@ -213,7 +228,7 @@ Commits any uncommitted changes, pushes the branch, and creates a PR via `gh`. R
 
 ### Phase 6: CI_CHECK — Monitor and fix CI
 
-Waits for CI checks to complete (up to 15 minutes). If CI passes, done. If CI fails, Robot King analyzes the failure logs, pushes a fix, and waits again — up to 3 fix attempts.
+Polls CI using exponential backoff — checks at 2, 3, 5, 5, 10, 10, 10 minute intervals (45 minute max). If CI passes, done. If CI fails, Robot King analyzes the failure logs, pushes a fix, and the cycle repeats — up to 3 fix attempts.
 
 **Skippable:** `--skip-ci` (or `--skip-oink`) skips straight to DONE.
 
@@ -252,6 +267,7 @@ All state is stored in `.robot-consortium/` in the working directory:
 | `critiques/` | Rat adversarial critiques |
 | `final-plan.md` | Synthesized implementation plan |
 | `reviews/` | OINK verification results |
+| `failure-report.md` | Written on BUILD failure — task details, errors, and rollback command |
 
 Use `rc status` to see current progress. Use `rc resume` to pick up where you left off. Use `rc abort` to clean up and start fresh.
 
